@@ -1,0 +1,5 @@
+.build/
+.xcdd/
+DerivedData/
+*.profraw
+.DS_Store
