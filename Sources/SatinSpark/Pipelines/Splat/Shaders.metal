@@ -11,10 +11,15 @@ typedef struct {
     float minPixelRadius;          // slider,0.0,8.0,0.05
     float maxPixelRadius;          // slider,1.0,2048.0,1.0
     float minAlpha;                // slider,0.0,1.0,0.001
+    float preBlurAmount;           // slider,0.0,16.0,0.1
+    float blurAmount;              // slider,0.0,16.0,0.1
+    float clipXY;                  // slider,0.1,4.0,0.1
+    float focalAdjustment;         // slider,0.1,4.0,0.1
     float falloff;                 // slider,0.0,1.0,0.01
     float2 renderSize;
     uint numSplats;
     uint debugMode;
+    uint legacySparkBlending;      // 1 = byte-parity with three.js Spark fixture
 } SplatUniforms;
 
 typedef struct {
@@ -26,6 +31,12 @@ typedef struct {
 
 static float sqr(float x) {
     return x * x;
+}
+
+static float3 srgbToLinear(float3 c) {
+    float3 lo = c / 12.92;
+    float3 hi = pow((c + 0.055) / 1.055, float3(2.4));
+    return select(lo, hi, c > 0.04045);
 }
 
 static float2 unpackHalf2(uint word) {
@@ -181,7 +192,9 @@ vertex SplatVertexData splatVertex(
         return out;
     }
 
-    rgba.a *= 2.0;
+    // Note: Spark's vertex shader does `rgba.a *= 2.0` here, but its SplatAccumulator
+    // pre-halves opacity (`mul(opacity, 0.5)` in SplatAccumulator.ts) so the round-trip
+    // is identity. We pack opacity directly without halving, so we skip the doubling.
     if (rgba.a <= 0.0 || rgba.a < uniforms.minAlpha || all(scales == float3(0.0))) {
         return culledSplatVertex();
     }
@@ -212,6 +225,10 @@ vertex SplatVertexData splatVertex(
     if (abs(clipCenter.z) >= clipCenter.w) {
         return culledSplatVertex();
     }
+    float clip = uniforms.clipXY * clipCenter.w;
+    if (abs(clipCenter.x) > clip || abs(clipCenter.y) > clip) {
+        return culledSplatVertex();
+    }
 
     float3x3 localRS = quatToMatrix(quaternion) * float3x3(
         float3(scales.x, 0.0, 0.0),
@@ -227,7 +244,8 @@ vertex SplatVertexData splatVertex(
     float3x3 cov3D = viewRS * transpose(viewRS);
 
     float2 renderSize = max(uniforms.renderSize, float2(1.0));
-    float2 focal = 0.5 * renderSize * float2(vu.projectionMatrix[0][0], vu.projectionMatrix[1][1]);
+    float2 scaledRenderSize = renderSize * uniforms.focalAdjustment;
+    float2 focal = 0.5 * scaledRenderSize * float2(vu.projectionMatrix[0][0], vu.projectionMatrix[1][1]);
     float invZ = 1.0 / viewCenter.z;
     float2 j1 = focal * invZ;
     float2 j2 = -(j1 * viewCenter.xy) * invZ;
@@ -241,10 +259,15 @@ vertex SplatVertexData splatVertex(
     float d = cov2D[1][1];
     float b = cov2D[0][1];
 
+    a += uniforms.preBlurAmount;
+    d += uniforms.preBlurAmount;
+
     float detOrig = a * d - b * b;
-    a += 0.3;
-    d += 0.3;
+    a += uniforms.blurAmount;
+    d += uniforms.blurAmount;
     float det = a * d - b * b;
+    float blurAdjust = sqrt(max(0.0, detOrig / det));
+    rgba.a *= blurAdjust;
 
     if (rgba.a < uniforms.minAlpha) {
         return culledSplatVertex();
@@ -260,14 +283,14 @@ vertex SplatVertexData splatVertex(
         : (a >= d ? float2(1.0, 0.0) : float2(0.0, 1.0));
     float2 eigenVec2 = float2(eigenVec1.y, -eigenVec1.x);
 
-    float scale1 = min(1024.0, adjustedStdDev * sqrt(max(eigen1, 0.0)));
-    float scale2 = min(1024.0, adjustedStdDev * sqrt(max(eigen2, 0.0)));
+    float scale1 = min(uniforms.maxPixelRadius, adjustedStdDev * sqrt(max(eigen1, 0.0)));
+    float scale2 = min(uniforms.maxPixelRadius, adjustedStdDev * sqrt(max(eigen2, 0.0)));
     if (scale1 < uniforms.minPixelRadius && scale2 < uniforms.minPixelRadius) {
         return culledSplatVertex();
     }
 
     float2 pixelOffset = in.position.x * eigenVec1 * scale1 + in.position.y * eigenVec2 * scale2;
-    float2 ndcOffset = (2.0 / renderSize) * pixelOffset;
+    float2 ndcOffset = (2.0 / scaledRenderSize) * pixelOffset;
     float3 ndcCenter = clipCenter.xyz / clipCenter.w;
     float3 ndc = float3(ndcCenter.xy + ndcOffset, ndcCenter.z);
 
@@ -307,6 +330,9 @@ fragment half4 splatFragment(
 
     if (rgba.a < uniforms.minAlpha) {
         discard_fragment();
+    }
+    if (uniforms.legacySparkBlending == 0u) {
+        rgba.rgb = srgbToLinear(rgba.rgb);
     }
     return half4(rgba);
 }

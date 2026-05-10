@@ -22,6 +22,14 @@ let package = Package(
             name: "satin-spark-bench",
             targets: ["SatinSparkBench"]
         ),
+        .executable(
+            name: "satin-spark-image-diff",
+            targets: ["SatinSparkImageDiff"]
+        ),
+        .executable(
+            name: "satin-spark-pack-dump",
+            targets: ["SatinSparkPackDump"]
+        ),
     ],
     dependencies: [
         .package(path: "../Satin"),
@@ -49,6 +57,13 @@ let package = Package(
         ),
         .executableTarget(
             name: "SatinSparkBench",
+            dependencies: ["SatinSpark"]
+        ),
+        .executableTarget(
+            name: "SatinSparkImageDiff"
+        ),
+        .executableTarget(
+            name: "SatinSparkPackDump",
             dependencies: ["SatinSpark"]
         ),
         .testTarget(

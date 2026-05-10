@@ -13,12 +13,28 @@ public final class SplatMaterial: SourceMaterial {
         didSet { set("minPixelRadius", minPixelRadius) }
     }
 
-    public var maxPixelRadius: Float = 1024.0 {
+    public var maxPixelRadius: Float = 512.0 {
         didSet { set("maxPixelRadius", maxPixelRadius) }
     }
 
-    public var minAlpha: Float = 1.0 / 255.0 {
+    public var minAlpha: Float = 0.5 / 255.0 {
         didSet { set("minAlpha", minAlpha) }
+    }
+
+    public var preBlurAmount: Float = 0.0 {
+        didSet { set("preBlurAmount", preBlurAmount) }
+    }
+
+    public var blurAmount: Float = 0.3 {
+        didSet { set("blurAmount", blurAmount) }
+    }
+
+    public var clipXY: Float = 1.4 {
+        didSet { set("clipXY", clipXY) }
+    }
+
+    public var focalAdjustment: Float = 1.0 {
+        didSet { set("focalAdjustment", focalAdjustment) }
     }
 
     public var falloff: Float = 1.0 {
@@ -31,6 +47,16 @@ public final class SplatMaterial: SourceMaterial {
 
     public var debugMode: UInt32 = 0 {
         didSet { set("debugMode", debugMode) }
+    }
+
+    /// When true, render in byte-parity mode with three.js Spark's WebGL fixture:
+    /// - skip the `rgba.a *= 2.0` opacity doubling in vertex
+    /// - skip the `srgbToLinear` decode in fragment
+    /// Use together with a non-sRGB render target (.bgra8Unorm) and an sRGB-encoded
+    /// clear color so the alpha blend math operates in the same display-space the
+    /// browser fixture does.
+    public var legacySparkBlending: Bool = false {
+        didSet { set("legacySparkBlending", legacySparkBlending ? UInt32(1) : UInt32(0)) }
     }
 
     private var numSplats: UInt32 = 0
@@ -89,10 +115,15 @@ public final class SplatMaterial: SourceMaterial {
         set("minPixelRadius", minPixelRadius)
         set("maxPixelRadius", maxPixelRadius)
         set("minAlpha", minAlpha)
+        set("preBlurAmount", preBlurAmount)
+        set("blurAmount", blurAmount)
+        set("clipXY", clipXY)
+        set("focalAdjustment", focalAdjustment)
         set("falloff", falloff)
         set("renderSize", renderSize)
         set("numSplats", numSplats)
         set("debugMode", debugMode)
+        set("legacySparkBlending", legacySparkBlending ? UInt32(1) : UInt32(0))
         updateEncodingUniform()
     }
 

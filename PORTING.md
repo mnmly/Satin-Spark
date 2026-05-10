@@ -77,17 +77,108 @@ shape for this port.
 | `shaders/splatVertex.glsl` | `splatVertex` |
 | `shaders/splatFragment.glsl` | `splatFragment` |
 
+## Visual Parity Harness (Chrome vs Satin)
+
+End-to-end runnable now. Three pieces:
+
+- `Scripts/spark-visual-server.mjs` serves `Scripts/spark-visual-fixture.html` and
+  packed-binary fixtures (`/banana-packed.bin`, `/fixture-packed.bin`, or any
+  `?packed=...` query) from the local Spark JS clone at
+  `/Users/mnmly/Development-local/GitHub/js/spark`.
+- `Scripts/capture-visible-chrome.mjs` drives a visible Chrome over CDP (port 9222),
+  navigates to a target URL, and grabs the canvas via `toDataURL`. Forwards
+  `Runtime.consoleAPICalled`, `Runtime.exceptionThrown`, and `Log.entryAdded` over
+  stderr (`[chrome:log]`, `[chrome:exception]`).
+- `satin-spark-pack-dump fixture <out.bin>` dumps the deterministic 5-splat scene
+  in the same packed binary format the JS fixture loads, so both engines see
+  byte-identical input.
+
+`satin-spark-render-fixture` and `satin-spark-image-diff` round out the loop on the
+Satin side.
+
+### Color pipeline parity findings
+
+Spark's WebGL pipeline differs from the obvious Metal-correct path in two ways:
+
+1. **Framebuffer / blend space.** Three.js with `outputColorSpace: srgb` and the
+   default `WebGLRenderer` ends up alpha-blending in the sRGB-encoded byte storage
+   (mathematically incorrect "linear blend on sRGB bytes" — common in legacy WebGL).
+   For exact byte parity, Satin needs to render to `.bgra8Unorm` (no auto sRGB) and
+   pre-encode the clear color via `linearToSRGB` so the dst byte matches.
+2. **Opacity convention.** Spark's vertex shader has `rgba.a *= 2.0` in the
+   single-texture branch but its `SplatAccumulator` repacks splats into the
+   8-word ext format that bypasses that branch entirely (vertex `if` branch reads
+   opacity directly). Net effect: Spark's effective alpha is the raw stored byte.
+   Satin used to call `rgba.a *= 2.0` unconditionally — this has been removed.
+
+### Current diff numbers
+
+Captured with the deterministic 5-splat fixture, viewZ-sorted, 512x512:
+
+| mode | mae | normalizedMAE | maxChannelDifference |
+| --- | --- | --- | --- |
+| Satin default (linearly-correct, `.bgra8Unorm_srgb`) | 1.32 | 0.0052 | 67 |
+| Satin `SATIN_SPARK_LEGACY_BLENDING=1` (Spark byte-parity) | 0.43 | 0.0017 | 67 |
+
+Banana 6585-splat scene still shows `mae≈30–40` in either mode. The dominant
+residual is **per-splat projected size** (Satin's banana renders visibly wider
+than Spark's), not opacity or colorspace. Sort metric (radial vs viewZ) moves
+the result by <1%. Suspect: `adjustedStdDev`, `blurAmount`, or `focal` interact
+slightly differently with dense-overlap accumulation. Needs a single-splat
+isolation tool to debug — extracting one splat from the banana, rendering it
+alone in both engines, and comparing projected radius.
+
+### `legacySparkBlending` flag
+
+Lives on `SplatMaterial`. When `true`:
+- vertex skips `srgbToLinear` decode in fragment
+- works in conjunction with a non-sRGB render target and pre-encoded clear color
+
+Useful as a regression test against Spark's actual output, not as a production
+mode. The render fixture toggles it via `SATIN_SPARK_LEGACY_BLENDING=1`. Default
+(`false`) renders linearly-correct.
+
+## GPU Splat Sort
+
+Implemented in `SplatGPUSorter` (`Sources/SatinSpark/SplatGPUSorter.swift`,
+kernels in `Pipelines/SplatSort/Shaders.metal`). Bitonic sort over (key, index)
+pairs:
+
+- `splatSortComputeKeys` decodes each splat's center, transforms to view-space,
+  emits `key = view.z` (viewZ metric) or `-|view|²` (radial). Padding entries
+  receive `+infinity` keys and `0xffffffff` indices, so they sort to the tail
+  and the vertex shader culls them by index.
+- `splatSortBitonicStep` runs `O(log² N)` compare-and-swap passes. Scratch keys
+  + indices buffers are `.storageModePrivate` and reused across calls.
+- The sorted index array is blit-copied into the existing `orderingBuffer`
+  (`storageModeShared`) the vertex shader already binds.
+
+Wired in:
+- `SatinSparkRenderFixture` uses GPU sort by default; `SATIN_SPARK_SORT=cpu`
+  falls back to `PackedSplats.sortedOrdering` (CPU reference) for regression
+  verification.
+- `SplatDemoRenderer` now sorts on the GPU per-frame as part of the same
+  command buffer that draws the splats. The original async-dispatch CPU sort
+  scaffolding has been removed.
+
+The CPU implementation (`PackedSplats.sortedOrdering`) is retained as a tested
+reference and is not used at runtime.
+
+A/B verification: GPU and CPU sort produce byte-identical output on the
+deterministic 5-splat fixture, and within 1 LSB on banana 6585-splat (same-key
+splats sort in different orders due to fp ordering of compares — both correct).
+
 ## Next Steps
 
-1. Move ordering updates toward production scale: reuse ordering buffer storage
-   instead of allocating each refresh, then move sorting to Metal compute.
-2. Add Chrome-vs-Satin visual parity capture:
-   - render the same deterministic packed scene in JS Spark under headless Chrome
-   - render `SplatFixtures.deterministicScene()` through Satin offscreen
-   - compare screenshots with tolerance and write a diff image
-3. Port `SplatLoader` format-by-format, beginning with `.splat` or `.ply`.
-4. Add extended splats, SH data, LOD, paging, and edit/skinning features after the
-   packed render path is visually validated.
+1. **Banana parity investigation** — extract a single high-opacity banana splat
+   into its own packed binary, render in both engines, compare projected radius
+   and per-splat falloff. Until that's pinned, dense-scene mae will stay in the
+   30s. Sort metric (radial vs viewZ) moves parity by <1% so it's not the
+   dominant residual.
+2. **Reuse ordering buffer storage** in the CPU sort fallback (currently
+   reallocates each refresh; the GPU path already reuses).
+3. Port `SplatLoader` format-by-format, beginning with `.splat`.
+4. Add extended splats, SH data, LOD, paging, and edit/skinning features.
 
 ## Deliberate Deferrals
 

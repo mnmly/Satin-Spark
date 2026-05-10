@@ -18,12 +18,26 @@ struct RenderFixtureResult {
     var projectionMatrix: simd_float4x4
 }
 
-let outputURL = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "/tmp/satin-spark-fixture.png")
+let arguments = Array(CommandLine.arguments.dropFirst())
+let outputURL = URL(fileURLWithPath: arguments.first ?? "/tmp/satin-spark-fixture.png")
+let inputURL = arguments.dropFirst().first.map(URL.init(fileURLWithPath:))
 let size = SIMD2<Int>(512, 512)
-let clearColor = SIMD4<Float>(0.03, 0.035, 0.045, 1.0)
+let legacySparkBlending = ProcessInfo.processInfo.environment["SATIN_SPARK_LEGACY_BLENDING"] == "1"
+let linearClearColor = SIMD4<Float>(0.03, 0.035, 0.045, 1.0)
+// In legacy mode the fb is plain bgra8Unorm and Three.js's WebGLRenderer would have
+// pre-encoded the THREE.Color clear via the sRGB OETF before storing it. Replicate
+// that so blend dst values land in the same byte storage as Spark.
+let clearColor: SIMD4<Float> = legacySparkBlending
+    ? SIMD4<Float>(linearToSRGB(linearClearColor.x), linearToSRGB(linearClearColor.y), linearToSRGB(linearClearColor.z), 1.0)
+    : linearClearColor
 
 do {
-    let result = try renderFixture(size: size, clearColor: clearColor)
+    let packedSplats = try inputURL.map(SplatPLYLoader.load(url:))
+    let result = try renderFixture(
+        size: size,
+        clearColor: clearColor,
+        packedSplats: packedSplats ?? SplatFixtures.deterministicScene()
+    )
     let image = result.image
     try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
     try writePNG(image, to: outputURL)
@@ -52,8 +66,9 @@ do {
 func renderFixture(
     size: SIMD2<Int>,
     clearColor: SIMD4<Float>,
-    packedSplats: PackedSplats = SplatFixtures.deterministicScene()
+    packedSplats: PackedSplats
 ) throws -> RenderFixtureResult {
+    let pixelFormat: MTLPixelFormat = legacySparkBlending ? .bgra8Unorm : .bgra8Unorm_srgb
     guard let device = MTLCreateSystemDefaultDevice() else {
         throw RuntimeError("Metal is unavailable")
     }
@@ -64,7 +79,7 @@ func renderFixture(
     let context = Context(
         device: device,
         sampleCount: 1,
-        colorPixelFormat: .bgra8Unorm,
+        colorPixelFormat: pixelFormat,
         depthPixelFormat: .depth32Float
     )
     let renderer = Renderer(context: context, clearColor: clearColor)
@@ -84,6 +99,12 @@ func renderFixture(
         }
     }
     let splatMesh = SplatMesh(context: context, packedSplats: fixtureSplats)
+    if let xyz = ProcessInfo.processInfo.environment["SATIN_SPARK_MESH_TRANSLATE"] {
+        let parts = xyz.split(separator: ",").compactMap { Float($0) }
+        if parts.count == 3 {
+            splatMesh.position = SIMD3<Float>(parts[0], parts[1], parts[2])
+        }
+    }
     let scene = Object(context: context, label: "SatinSpark Fixture", [splatMesh])
     let camera = PerspectiveCamera(context: context, position: [0.0, 0.0, 3.2], near: 0.01, far: 100.0, fov: 45.0)
     camera.aspect = Float(size.x) / Float(size.y)
@@ -115,10 +136,21 @@ func renderFixture(
         }
     }
     splatMesh.setup()
+    let sortMode = ProcessInfo.processInfo.environment["SATIN_SPARK_SORT"] ?? "gpu"
+    if sortMode == "cpu" {
+        splatMesh.updateOrdering(modelViewMatrix: camera.viewMatrix * splatMesh.worldMatrix, metric: .viewZ)
+    } else if sortMode == "none" {
+        // identity ordering: vertex sees splats in storage order
+        splatMesh.applyOrdering((0..<UInt32(splatMesh.packedSplats.numSplats)).map { $0 })
+    }
     guard let material = splatMesh.material as? SplatMaterial else {
         throw RuntimeError("Splat mesh material is not SplatMaterial")
     }
     material.renderSize = [Float(size.x), Float(size.y)]
+    material.legacySparkBlending = legacySparkBlending
+    if let s = ProcessInfo.processInfo.environment["SATIN_SPARK_MAX_STD_DEV"], let v = Float(s) {
+        material.maxStdDev = v
+    }
     if ProcessInfo.processInfo.environment["SATIN_SPARK_DEBUG_QUADS"] == "1" {
         material.debugMode = 1
     } else if ProcessInfo.processInfo.environment["SATIN_SPARK_DEBUG_PROJECTED"] == "1" {
@@ -137,7 +169,7 @@ func renderFixture(
     }
 
     let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-        pixelFormat: .bgra8Unorm,
+        pixelFormat: pixelFormat,
         width: size.x,
         height: size.y,
         mipmapped: false
@@ -151,6 +183,20 @@ func renderFixture(
     }
     guard let commandBuffer = commandQueue.makeCommandBuffer() else {
         throw RuntimeError("Failed to create command buffer")
+    }
+
+    if sortMode != "cpu",
+       let packedBuffer = splatMesh.packedBuffer,
+       let orderingBuffer = splatMesh.orderingBuffer {
+        let sorter = try SplatGPUSorter(device: device)
+        sorter.encode(
+            commandBuffer: commandBuffer,
+            packedBuffer: packedBuffer,
+            orderingBuffer: orderingBuffer,
+            numSplats: splatMesh.packedSplats.numSplats,
+            modelViewMatrix: camera.viewMatrix * splatMesh.worldMatrix,
+            metric: .viewZ
+        )
     }
 
     renderer.draw(
@@ -511,6 +557,10 @@ func maxDeviationFromClear(in image: RGBAImage, near pixel: SIMD2<Float>, clearC
         }
     }
     return maxDeviation
+}
+
+func linearToSRGB(_ c: Float) -> Float {
+    c <= 0.0031308 ? 12.92 * c : 1.055 * pow(c, 1.0 / 2.4) - 0.055
 }
 
 func readableTextureStorageMode() -> MTLStorageMode {

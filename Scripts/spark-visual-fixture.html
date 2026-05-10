@@ -1,0 +1,213 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Satin Spark Visual Fixture</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: rgb(8, 9, 11);
+    }
+    canvas {
+      display: block;
+      width: 512px;
+      height: 512px;
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/spark/node_modules/three/build/three.module.js",
+        "three/addons/": "/spark/node_modules/three/examples/jsm/",
+        "@sparkjsdev/spark": "/spark/dist/spark.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+<canvas id="fixture" width="512" height="512"></canvas>
+<script type="module">
+  import * as THREE from "three";
+  import { PackedSplats, SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
+
+  window.addEventListener("error", (event) => {
+    document.documentElement.dataset.error = event.message;
+    console.error("[fixture] window error:", event.message, event.error);
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    document.documentElement.dataset.error = String(event.reason?.message ?? event.reason);
+    console.error("[fixture] unhandled rejection:", event.reason);
+  });
+  console.log("[fixture] script start");
+
+  const canvas = document.getElementById("fixture");
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100.0);
+  camera.position.set(0, 0, 3.2);
+  camera.lookAt(0, 0, 0);
+  camera.updateProjectionMatrix();
+
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    alpha: false,
+    antialias: false,
+    premultipliedAlpha: true,
+    preserveDrawingBuffer: true,
+  });
+  renderer.setPixelRatio(1);
+  renderer.setSize(512, 512, false);
+  renderer.setClearColor(new THREE.Color(0.03, 0.035, 0.045), 1);
+
+  const spark = new SparkRenderer({
+    renderer,
+    premultipliedAlpha: true,
+    transparent: true,
+    depthWrite: false,
+    enableLod: false,
+    preUpdate: false,
+  });
+  spark.readPause = 0;
+  scene.add(spark);
+
+  const packedURL = new URL(window.location.href).searchParams.get("packed") ?? "/banana-packed.bin";
+  console.log("[fixture] fetching", packedURL);
+  const packedResponse = await fetch(packedURL, { cache: "no-store" });
+  if (!packedResponse.ok) {
+    throw new Error(`Failed to load packed fixture: ${packedResponse.status}`);
+  }
+  const packedBuffer = await packedResponse.arrayBuffer();
+  console.log("[fixture] packed bytes:", packedBuffer.byteLength);
+  const header = new DataView(packedBuffer, 0, 24);
+  const numSplats = header.getUint32(0, true);
+  const maxSplats = header.getUint32(4, true);
+  const rgbMin = header.getFloat32(8, true);
+  const rgbMax = header.getFloat32(12, true);
+  const lnScaleMin = header.getFloat32(16, true);
+  const lnScaleMax = header.getFloat32(20, true);
+  console.log("[fixture] header:", { numSplats, maxSplats, rgbMin, rgbMax, lnScaleMin, lnScaleMax });
+  const packedArray = new Uint32Array(packedBuffer, 24);
+  console.log("[fixture] packedArray length (uint32):", packedArray.length, "first 8:", Array.from(packedArray.slice(0, 8)));
+  const packedSplats = new PackedSplats({
+    packedArray,
+    numSplats,
+    maxSplats,
+    splatEncoding: { rgbMin, rgbMax, lnScaleMin, lnScaleMax },
+  });
+  console.log("[fixture] PackedSplats created:", {
+    numSplats: packedSplats.numSplats,
+    maxSplats: packedSplats.maxSplats,
+    hasPackedArray: !!packedSplats.packedArray,
+    packedArrayLen: packedSplats.packedArray?.length,
+    splatEncoding: packedSplats.splatEncoding,
+  });
+  const splat = new SplatMesh({ packedSplats });
+  console.log("[fixture] SplatMesh constructed", {
+    visible: splat.visible,
+    children: splat.children?.length,
+    initialized: !!splat.initialized,
+  });
+  scene.add(splat);
+
+  try {
+    await Promise.race([
+      splat.initialized,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("SplatMesh initialization timed out")), 6000)),
+    ]);
+    console.log("[fixture] splat.initialized resolved", {
+      numSplats: splat.packedSplats?.numSplats,
+      maxSplats: splat.packedSplats?.maxSplats,
+    });
+    document.documentElement.dataset.loaded = String(numSplats);
+  } catch (error) {
+    console.error("[fixture] splat.initialized failed:", error);
+    document.documentElement.dataset.error = String(error?.message ?? error);
+  }
+
+  console.log("[fixture] calling spark.update");
+  await spark.update({ scene, camera });
+  console.log("[fixture] spark.update done. activeSplats:", spark.activeSplats);
+  for (let i = 0; i < 120; ++i) {
+    renderer.render(scene, camera);
+    if ((spark.activeSplats ?? 0) > 0) {
+      console.log("[fixture] activeSplats > 0 after", i, "frames:", spark.activeSplats);
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  renderer.render(scene, camera);
+  console.log("[fixture] final activeSplats:", spark.activeSplats, "renderer info:", {
+    calls: renderer.info?.render?.calls,
+    triangles: renderer.info?.render?.triangles,
+    points: renderer.info?.render?.points,
+  });
+  // Sample peak pixels using gl.readPixels (drawingbuffer-space, pre-canvas-output-conversion)
+  // gl.readPixels uses bottom-left origin, so flip Y from image-space.
+  try {
+    const gl = renderer.getContext();
+    // Search for max-channel peak in each splat region (drawingbuffer space, image-space coords)
+    const regions = [
+      ["red",    80, 180, 270, 340, 0],
+      ["blue",   180, 260, 190, 260, 2],
+      ["yellow", 280, 360, 260, 330, 0],
+      ["green",  350, 430, 200, 250, 1],
+      ["purple", 230, 310, 240, 300, 0],
+    ];
+    const W = canvas.width, H = canvas.height;
+    const buf = new Uint8Array(W * H * 4);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    const out = {};
+    for (const [name, x0, x1, y0, y1, ch] of regions) {
+      let best = -1, bx = 0, by = 0, br = 0, bg = 0, bb = 0;
+      for (let y = y0; y <= y1; y++) {
+        const fy = H - 1 - y; // flip image-y to gl-y
+        for (let x = x0; x <= x1; x++) {
+          const i = (fy * W + x) * 4;
+          const v = buf[i + ch];
+          if (v > best) { best = v; bx = x; by = y; br = buf[i]; bg = buf[i+1]; bb = buf[i+2]; }
+        }
+      }
+      out[name] = [bx, by, br, bg, bb];
+    }
+    console.log("[fixture] gl.readPixels samples (pre-canvas-output):", JSON.stringify(out));
+  } catch (error) {
+    console.warn("[fixture] readPixels failed:", error);
+  }
+  window.__spark = spark;
+  window.__renderer = renderer;
+  window.__splat = splat;
+  window.__scene = scene;
+  window.__camera = camera;
+  console.log("[fixture] introspection:", JSON.stringify({
+    encodeLinear: spark.encodeLinear,
+    premultipliedAlpha: spark.premultipliedAlpha,
+    maxStdDev: spark.maxStdDev,
+    falloff: spark.falloff,
+    blurAmount: spark.blurAmount,
+    matBlending: spark.material.blending,
+    matBlendSrc: spark.material.blendSrc,
+    matBlendDst: spark.material.blendDst,
+    matBlendEquation: spark.material.blendEquation,
+    matDefines: spark.material.defines,
+    outputColorSpace: renderer.outputColorSpace,
+    toneMapping: renderer.toneMapping,
+    toneMappingExposure: renderer.toneMappingExposure,
+    capabilities_isWebGL2: renderer.capabilities?.isWebGL2,
+    drawingBufferColorSpace: renderer.outputColorSpace,
+    canvasW: canvas.width, canvasH: canvas.height,
+    drawingBufferW: renderer.getContext().drawingBufferWidth,
+    drawingBufferH: renderer.getContext().drawingBufferHeight,
+    glParam_FRAMEBUFFER_SRGB_EXT: (() => {
+      const gl = renderer.getContext();
+      const ext = gl.getExtension('EXT_sRGB') || true;
+      return String(ext);
+    })(),
+  }));
+  document.documentElement.dataset.activeSplats = String(spark.activeSplats ?? 0);
+  document.documentElement.dataset.ready = "1";
+  console.log("[fixture] ready=1");
+</script>
+</body>
+</html>

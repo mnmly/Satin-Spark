@@ -1,4 +1,3 @@
-import Dispatch
 import Metal
 import Satin
 import simd
@@ -22,13 +21,13 @@ open class SplatDemoRenderer: MetalViewRenderer, @unchecked Sendable {
     public var sortDistance: Float = 0.01
     public var sortCoorient: Float = 0.999
 
+    private lazy var gpuSorter: SplatGPUSorter? = {
+        try? SplatGPUSorter(device: defaultContext.device)
+    }()
+
     private var lastSortPosition: SIMD3<Float>?
     private var lastSortDirection: SIMD3<Float>?
     private var needsOrderingUpdate = true
-    private let sortQueue = DispatchQueue(label: "com.satin.spark.demo.sort", qos: .userInteractive)
-    private var sortGeneration = 0
-    private var sortInFlight = false
-    private var sortAgainAfterInFlight = false
 
     open override func setup() {
         renderer.setClearColor([0.03, 0.035, 0.045, 1.0])
@@ -47,22 +46,45 @@ open class SplatDemoRenderer: MetalViewRenderer, @unchecked Sendable {
     }
 
     public func replacePackedSplats(_ packedSplats: PackedSplats) {
-        sortGeneration += 1
-        sortInFlight = false
-        sortAgainAfterInFlight = false
         splatMesh.replacePackedSplats(packedSplats)
         needsOrderingUpdate = true
         frameCamera(to: packedSplats)
     }
 
     open override func draw(renderPassDescriptor: MTLRenderPassDescriptor, commandBuffer: MTLCommandBuffer) {
-        updateOrderingIfNeeded()
+        if let sorter = gpuSorter {
+            updateOrderingIfNeeded(sorter: sorter, commandBuffer: commandBuffer)
+        }
         renderer.draw(
             renderPassDescriptor: renderPassDescriptor,
             commandBuffer: commandBuffer,
             scene: scene,
             camera: camera
         )
+    }
+
+    private func updateOrderingIfNeeded(sorter: SplatGPUSorter, commandBuffer: MTLCommandBuffer) {
+        let position = camera.worldPosition
+        let direction = camera.viewDirection
+        let positionDelta = lastSortPosition.map { simd_length(position - $0) } ?? Float.greatestFiniteMagnitude
+        let coorient = lastSortDirection.map { simd_dot(direction, $0) } ?? -Float.greatestFiniteMagnitude
+
+        guard needsOrderingUpdate || positionDelta > sortDistance || coorient < sortCoorient else { return }
+        guard let packedBuffer = splatMesh.packedBuffer,
+              let orderingBuffer = splatMesh.orderingBuffer else { return }
+
+        sorter.encode(
+            commandBuffer: commandBuffer,
+            packedBuffer: packedBuffer,
+            orderingBuffer: orderingBuffer,
+            numSplats: splatMesh.packedSplats.numSplats,
+            modelViewMatrix: camera.viewMatrix * splatMesh.worldMatrix,
+            metric: sortMetric
+        )
+
+        lastSortPosition = position
+        lastSortDirection = direction
+        needsOrderingUpdate = false
     }
 
     open override func resize(size: (width: Float, height: Float), scaleFactor _: Float) {
@@ -115,53 +137,5 @@ open class SplatDemoRenderer: MetalViewRenderer, @unchecked Sendable {
         cameraController?.defaultOrientation = camera.orientation
         cameraController?.enable()
         needsOrderingUpdate = true
-    }
-
-    private func updateOrderingIfNeeded() {
-        let position = camera.worldPosition
-        let direction = camera.viewDirection
-        let positionDelta = lastSortPosition.map { simd_length(position - $0) } ?? Float.greatestFiniteMagnitude
-        let coorient = lastSortDirection.map { simd_dot(direction, $0) } ?? -Float.greatestFiniteMagnitude
-
-        guard needsOrderingUpdate || positionDelta > sortDistance || coorient < sortCoorient else { return }
-
-        scheduleOrderingUpdate(modelViewMatrix: camera.viewMatrix, metric: sortMetric)
-        lastSortPosition = position
-        lastSortDirection = direction
-        needsOrderingUpdate = false
-    }
-
-    private func scheduleOrderingUpdate(modelViewMatrix: simd_float4x4, metric: SplatSortMetric) {
-        if sortInFlight {
-            sortAgainAfterInFlight = true
-            return
-        }
-
-        sortInFlight = true
-        sortAgainAfterInFlight = false
-        let generation = sortGeneration
-        let packedArray = splatMesh.packedSplats.packedArray
-        let numSplats = splatMesh.packedSplats.numSplats
-
-        sortQueue.async { [weak self] in
-            let ordering = PackedSplats.sortedOrdering(
-                packedArray: packedArray,
-                numSplats: numSplats,
-                modelViewMatrix: modelViewMatrix,
-                metric: metric
-            )
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                guard generation == sortGeneration else { return }
-
-                splatMesh.applyOrdering(ordering)
-                sortInFlight = false
-                if sortAgainAfterInFlight {
-                    needsOrderingUpdate = true
-                    sortAgainAfterInFlight = false
-                }
-            }
-        }
     }
 }
