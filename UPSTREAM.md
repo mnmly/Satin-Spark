@@ -14,6 +14,20 @@ this block (and the date) whenever you do a sync.
 - Local clone path used by `Scripts/spark-visual-server.mjs`:
   `/Users/mnmly/Development-local/GitHub/js/spark`
 
+## Release ↔ upstream mapping
+
+Satin-Spark uses its own SemVer (independent of Spark's version). Each
+release pins a specific upstream Spark commit; the table below records
+which release tracked which Spark.
+
+| Satin-Spark | Spark commit | Spark version (describe) | Date |
+| --- | --- | --- | --- |
+| `v0.1.0` | `3cf9fa1` | `v2.0.0-11-g3cf9fa1` | 2026-05-10 |
+| `v0.0.1` | (pre-harness; no parity assertion) | — | — |
+
+When you bump the "Pinned upstream" block above as part of a sync, also add
+a row to this table for the Satin-Spark version that ships with that pin.
+
 ## Files that mirror upstream Spark
 
 These are the load-bearing ports. When upstream changes them, this package
