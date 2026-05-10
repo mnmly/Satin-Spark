@@ -17,18 +17,21 @@ public final class PackedSplats {
     public private(set) var maxSplats: Int
     public private(set) var numSplats: Int
     public private(set) var packedArray: [UInt32]
+    public var sphericalHarmonics: PackedSphericalHarmonics
     public var splatEncoding: SplatEncoding
 
     public init(
         packedArray: [UInt32] = [],
         numSplats: Int? = nil,
         maxSplats: Int? = nil,
+        sphericalHarmonics: PackedSphericalHarmonics = PackedSphericalHarmonics(),
         splatEncoding: SplatEncoding = SplatEncoding()
     ) {
         precondition(packedArray.count.isMultiple(of: 4), "Packed splat arrays must contain 4 UInt32 words per splat")
         self.packedArray = packedArray
         self.numSplats = min(numSplats ?? packedArray.count / 4, packedArray.count / 4)
         self.maxSplats = max(maxSplats ?? packedArray.count / 4, self.numSplats)
+        self.sphericalHarmonics = sphericalHarmonics
         self.splatEncoding = splatEncoding
 
         let requiredWords = self.maxSplats * 4
@@ -43,7 +46,12 @@ public final class PackedSplats {
             result.setSplat(splat, at: index)
         }
         result.numSplats = splats.count
-        self.init(packedArray: result.packedArray, numSplats: result.numSplats, splatEncoding: splatEncoding)
+        self.init(
+            packedArray: result.packedArray,
+            numSplats: result.numSplats,
+            sphericalHarmonics: result.sphericalHarmonics,
+            splatEncoding: splatEncoding
+        )
     }
 
     public func makeBuffer(device: MTLDevice, options: MTLResourceOptions = .storageModeShared) -> MTLBuffer? {
@@ -59,6 +67,18 @@ public final class PackedSplats {
         return ordering.withUnsafeBytes { bytes in
             device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: options)
         }
+    }
+
+    public func makeSH1Buffer(device: MTLDevice, options: MTLResourceOptions = .storageModeShared) -> MTLBuffer? {
+        makeBuffer(from: sphericalHarmonics.sh1, device: device, options: options)
+    }
+
+    public func makeSH2Buffer(device: MTLDevice, options: MTLResourceOptions = .storageModeShared) -> MTLBuffer? {
+        makeBuffer(from: sphericalHarmonics.sh2, device: device, options: options)
+    }
+
+    public func makeSH3Buffer(device: MTLDevice, options: MTLResourceOptions = .storageModeShared) -> MTLBuffer? {
+        makeBuffer(from: sphericalHarmonics.sh3, device: device, options: options)
     }
 
     public func sortedOrdering(
@@ -214,6 +234,17 @@ public final class PackedSplats {
         guard count > maxSplats else { return }
         maxSplats = count
         packedArray.append(contentsOf: repeatElement(0, count: count * 4 - packedArray.count))
+    }
+
+    private func makeBuffer(
+        from words: [UInt32]?,
+        device: MTLDevice,
+        options: MTLResourceOptions
+    ) -> MTLBuffer? {
+        guard let words, !words.isEmpty else { return nil }
+        return words.withUnsafeBytes { bytes in
+            device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: options)
+        }
     }
 
     public func packedWords(at index: Int) -> SIMD4<UInt32> {

@@ -14,7 +14,7 @@ private func measure<T>(_ label: String, _ body: () throws -> T) rethrows -> T {
 
 let arguments = CommandLine.arguments.dropFirst()
 guard let path = arguments.first else {
-    fputs("usage: satin-spark-bench <file.ply>\n", stderr)
+    fputs("usage: satin-spark-bench <file.ply|file.splat|...>\n", stderr)
     exit(2)
 }
 
@@ -22,8 +22,19 @@ let url = URL(fileURLWithPath: path)
 let data = try measure("read") {
     try Data(contentsOf: url, options: [.mappedIfSafe])
 }
+
+if SplatLoader.fileType(for: data, path: path) == .rad {
+    let header = try measure("parse rad header") {
+        try SplatRADLoader.parseHeader(data)
+    }
+    print("rad splats: \(header.metadata.count)")
+    print("rad chunks: \(header.metadata.chunks.count)")
+    print("rad chunks start: \(header.chunksStart)")
+    exit(0)
+}
+
 let splats = try measure("parse+pack") {
-    try SplatPLYLoader.parse(data)
+    try SplatLoader.parse(data, path: path)
 }
 print("splats: \(splats.numSplats)")
 

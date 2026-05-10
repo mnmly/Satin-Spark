@@ -6,6 +6,10 @@ open class SplatMesh: Mesh {
     public private(set) var packedSplats: PackedSplats
     public private(set) var packedBuffer: MTLBuffer?
     public private(set) var orderingBuffer: MTLBuffer?
+    public private(set) var sh1Buffer: MTLBuffer?
+    public private(set) var sh2Buffer: MTLBuffer?
+    public private(set) var sh3Buffer: MTLBuffer?
+    private var emptySHBuffer: MTLBuffer?
     public private(set) var ordering: [UInt32] = []
 
     public init(
@@ -16,6 +20,7 @@ open class SplatMesh: Mesh {
         self.packedSplats = packedSplats
         let material = SplatMaterial(context: context, live: liveShader)
         material.splatEncoding = packedSplats.splatEncoding
+        material.shDegree = UInt32(packedSplats.sphericalHarmonics.degree)
         super.init(
             context: context,
             label: "SplatMesh",
@@ -40,12 +45,22 @@ open class SplatMesh: Mesh {
         instanceCount = packedSplats.numSplats
         if let material = material as? SplatMaterial {
             material.splatEncoding = packedSplats.splatEncoding
+            material.shDegree = UInt32(packedSplats.sphericalHarmonics.degree)
         }
         rebuildBuffers()
     }
 
     public func rebuildBuffers() {
         packedBuffer = packedSplats.makeBuffer(device: context.device)
+        if emptySHBuffer == nil {
+            let empty = [UInt32](repeating: 0, count: 4)
+            emptySHBuffer = empty.withUnsafeBytes { bytes in
+                context.device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: .storageModeShared)
+            }
+        }
+        sh1Buffer = packedSplats.makeSH1Buffer(device: context.device)
+        sh2Buffer = packedSplats.makeSH2Buffer(device: context.device)
+        sh3Buffer = packedSplats.makeSH3Buffer(device: context.device)
         ordering = (0 ..< packedSplats.numSplats).map(UInt32.init)
         orderingBuffer = packedSplats.makeOrderingBuffer(device: context.device, ordering: ordering)
         bindSplatBuffers()
@@ -87,6 +102,12 @@ open class SplatMesh: Mesh {
         guard let material = material as? SplatMaterial else { return }
         material.setPackedBuffer(packedBuffer)
         material.setOrderingBuffer(orderingBuffer)
+        material.setSHBuffers(
+            sh1: sh1Buffer ?? emptySHBuffer,
+            sh2: sh2Buffer ?? emptySHBuffer,
+            sh3: sh3Buffer ?? emptySHBuffer
+        )
         material.setNumSplats(packedSplats.numSplats)
+        material.shDegree = UInt32(packedSplats.sphericalHarmonics.degree)
     }
 }

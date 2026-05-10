@@ -49,6 +49,10 @@ public final class SplatMaterial: SourceMaterial {
         didSet { set("debugMode", debugMode) }
     }
 
+    public var shDegree: UInt32 = 0 {
+        didSet { set("shDegree", shDegree) }
+    }
+
     /// When true, render in byte-parity mode with three.js Spark's WebGL fixture:
     /// - skip the `rgba.a *= 2.0` opacity doubling in vertex
     /// - skip the `srgbToLinear` decode in fragment
@@ -96,6 +100,13 @@ public final class SplatMaterial: SourceMaterial {
         updateExplicitBufferBindings()
     }
 
+    public func setSHBuffers(sh1: MTLBuffer?, sh2: MTLBuffer?, sh3: MTLBuffer?) {
+        set(sh1, index: VertexBufferIndex.Custom2)
+        set(sh2, index: VertexBufferIndex.Custom3)
+        set(sh3, index: VertexBufferIndex.Custom4)
+        updateExplicitBufferBindings()
+    }
+
     public func setNumSplats(_ numSplats: Int) {
         self.numSplats = UInt32(numSplats)
         set("numSplats", self.numSplats)
@@ -123,6 +134,7 @@ public final class SplatMaterial: SourceMaterial {
         set("renderSize", renderSize)
         set("numSplats", numSplats)
         set("debugMode", debugMode)
+        set("shDegree", shDegree)
         set("legacySparkBlending", legacySparkBlending ? UInt32(1) : UInt32(0))
         updateEncodingUniform()
     }
@@ -137,17 +149,30 @@ public final class SplatMaterial: SourceMaterial {
                 splatEncoding.lnScaleMax
             )
         )
+        set("shMax", SIMD3<Float>(splatEncoding.sh1Max, splatEncoding.sh2Max, splatEncoding.sh3Max))
     }
 
     private func updateExplicitBufferBindings() {
         let packed = vertexBuffers[.Custom0]
         let ordering = vertexBuffers[.Custom1]
+        let sh1 = vertexBuffers[.Custom2]
+        let sh2 = vertexBuffers[.Custom3]
+        let sh3 = vertexBuffers[.Custom4]
         onBind = { renderEncoder in
             if let packed {
                 renderEncoder.setVertexBuffer(packed, offset: 0, index: VertexBufferIndex.Custom0.rawValue)
             }
             if let ordering {
                 renderEncoder.setVertexBuffer(ordering, offset: 0, index: VertexBufferIndex.Custom1.rawValue)
+            }
+            if let sh1 {
+                renderEncoder.setVertexBuffer(sh1, offset: 0, index: VertexBufferIndex.Custom2.rawValue)
+            }
+            if let sh2 {
+                renderEncoder.setVertexBuffer(sh2, offset: 0, index: VertexBufferIndex.Custom3.rawValue)
+            }
+            if let sh3 {
+                renderEncoder.setVertexBuffer(sh3, offset: 0, index: VertexBufferIndex.Custom4.rawValue)
             }
         }
     }

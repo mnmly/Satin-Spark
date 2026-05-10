@@ -139,7 +139,7 @@ private struct PLYHeader {
     var bodyOffset: Int
 }
 
-private enum VertexSemantic {
+private enum VertexSemantic: Equatable {
     case x
     case y
     case z
@@ -161,6 +161,7 @@ private enum VertexSemantic {
     case fdc0
     case fdc1
     case fdc2
+    case fRest(Int)
     case ignored
 }
 
@@ -179,6 +180,8 @@ private struct VertexLayout {
     var greenScale: Float = 1.0
     var blueScale: Float = 1.0
     var alphaScale: Float = 1.0
+    var shDegree: Int = 0
+    var shRestCount: Int = 0
 
     init(properties: [PLYProperty]) throws {
         var offset = 0
@@ -202,6 +205,25 @@ private struct VertexLayout {
             default:
                 break
             }
+        }
+
+        shRestCount = fields.reduce(0) { result, field in
+            if case let .fRest(index) = field.semantic {
+                return max(result, index + 1)
+            }
+            return result
+        }
+        switch shRestCount {
+        case 0:
+            shDegree = 0
+        case 9:
+            shDegree = 1
+        case 24:
+            shDegree = 2
+        case 45:
+            shDegree = 3
+        default:
+            throw SplatPLYLoaderError.unsupportedFormat("unsupported number of SH coefficients: \(shRestCount)")
         }
 
         guard fields.contains(where: { $0.semantic == .x }),
@@ -238,6 +260,7 @@ private struct VertexValues {
     var fdc0: Float?
     var fdc1: Float?
     var fdc2: Float?
+    var fRest = Array(repeating: Float(0.0), count: 45)
 }
 
 private let shC0: Float = 0.28209479177387814
@@ -323,13 +346,15 @@ private func parseBinaryLittleEndianVertices(
     }
 
     var packedArray = Array(repeating: UInt32(0), count: header.vertexCount * 4)
+    var sphericalHarmonics = makeSphericalHarmonicsStorage(numSplats: header.vertexCount, degree: layout.shDegree)
     for index in 0 ..< header.vertexCount {
         let vertexBase = base + header.bodyOffset + index * layout.stride
         let values = readBinaryVertex(base: vertexBase, layout: layout)
         writePackedSplat(values, layout: layout, into: &packedArray, at: index)
+        writeSphericalHarmonics(values, layout: layout, into: &sphericalHarmonics, at: index)
     }
 
-    return PackedSplats(packedArray: packedArray, numSplats: header.vertexCount)
+    return PackedSplats(packedArray: packedArray, numSplats: header.vertexCount, sphericalHarmonics: sphericalHarmonics)
 }
 
 private func parseASCIIVertices(
@@ -340,6 +365,7 @@ private func parseASCIIVertices(
 ) throws -> PackedSplats {
     var cursor = header.bodyOffset
     var packedArray = Array(repeating: UInt32(0), count: header.vertexCount * 4)
+    var sphericalHarmonics = makeSphericalHarmonicsStorage(numSplats: header.vertexCount, degree: layout.shDegree)
 
     for index in 0 ..< header.vertexCount {
         while cursor < count, (base[cursor] == 0x0a || base[cursor] == 0x0d) {
@@ -373,9 +399,10 @@ private func parseASCIIVertices(
             assign(value, semantic: field.semantic, to: &values)
         }
         writePackedSplat(values, layout: layout, into: &packedArray, at: index)
+        writeSphericalHarmonics(values, layout: layout, into: &sphericalHarmonics, at: index)
     }
 
-    return PackedSplats(packedArray: packedArray, numSplats: header.vertexCount)
+    return PackedSplats(packedArray: packedArray, numSplats: header.vertexCount, sphericalHarmonics: sphericalHarmonics)
 }
 
 private func readBinaryVertex(base: UnsafePointer<UInt8>, layout: VertexLayout) -> VertexValues {
@@ -414,6 +441,44 @@ private func writePackedSplat(_ values: VertexValues, layout: VertexLayout, into
         | (encodePackedScale(scale.y, encoding: defaultEncoding) << 8)
         | (encodePackedScale(scale.z, encoding: defaultEncoding) << 16)
         | (((encodedQuat >> 16) & 0xff) << 24)
+}
+
+private func makeSphericalHarmonicsStorage(numSplats: Int, degree: Int) -> PackedSphericalHarmonics {
+    PackedSphericalHarmonics.storage(numSplats: numSplats, degree: degree)
+}
+
+private func writeSphericalHarmonics(
+    _ values: VertexValues,
+    layout: VertexLayout,
+    into sphericalHarmonics: inout PackedSphericalHarmonics,
+    at index: Int
+) {
+    guard layout.shDegree > 0 else { return }
+    let shRestCount = layout.shRestCount
+    if sphericalHarmonics.sh1 != nil {
+        let coefficients = shCoefficients(values.fRest, start: 0, count: 3, shRestCount: shRestCount)
+        sphericalHarmonics.setSH1(coefficients, at: index, encoding: defaultEncoding)
+    }
+    if sphericalHarmonics.sh2 != nil {
+        let coefficients = shCoefficients(values.fRest, start: 3, count: 5, shRestCount: shRestCount)
+        sphericalHarmonics.setSH2(coefficients, at: index, encoding: defaultEncoding)
+    }
+    if sphericalHarmonics.sh3 != nil {
+        let coefficients = shCoefficients(values.fRest, start: 8, count: 7, shRestCount: shRestCount)
+        sphericalHarmonics.setSH3(coefficients, at: index, encoding: defaultEncoding)
+    }
+}
+
+private func shCoefficients(_ fRest: [Float], start: Int, count: Int, shRestCount: Int) -> [Float] {
+    var coefficients = Array(repeating: Float(0.0), count: count * 3)
+    let stride = shRestCount / 3
+    for k in 0 ..< count {
+        for d in 0 ..< 3 {
+            let source = start + k + d * stride
+            coefficients[k * 3 + d] = source < fRest.count ? fRest[source] : 0.0
+        }
+    }
+    return coefficients
 }
 
 private func decodedScale(logScale: Float?, directScale: Float?) -> Float {
@@ -504,12 +569,19 @@ private func assign(_ value: Float, semantic: VertexSemantic, to values: inout V
         values.fdc1 = value
     case .fdc2:
         values.fdc2 = value
+    case let .fRest(index):
+        if index >= 0, index < values.fRest.count {
+            values.fRest[index] = value
+        }
     case .ignored:
         break
     }
 }
 
 private func semantic(for name: String) -> VertexSemantic {
+    if name.hasPrefix("f_rest_"), let index = Int(name.dropFirst("f_rest_".count)) {
+        return .fRest(index)
+    }
     switch name {
     case "x":
         return .x

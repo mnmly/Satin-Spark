@@ -13,6 +13,7 @@ constant float PI = 3.1415926535897932384626433832795;
 
 typedef struct {
     float4 rgbMinMaxLnScaleMinMax; // color
+    float3 shMax;
     float maxStdDev;               // slider,1.0,6.0,0.1
     float minPixelRadius;          // slider,0.0,8.0,0.05
     float maxPixelRadius;          // slider,1.0,2048.0,1.0
@@ -25,6 +26,7 @@ typedef struct {
     float2 renderSize;
     uint numSplats;
     uint debugMode;
+    uint shDegree;
     uint legacySparkBlending;      // 1 = byte-parity with three.js Spark fixture
 } SplatUniforms;
 
@@ -128,6 +130,72 @@ static void unpackSplat(
     quaternion = decodeQuatOctXy88R8(encodedQuat);
 }
 
+static int signExtend(uint value, uint shift) {
+    return int(value << shift) >> shift;
+}
+
+static float3 evaluatePackedSH1(uint2 packed, float3 viewDir, float sh1Max) {
+    float3 sh1_0 = float3(
+        signExtend(packed.x, 25u),
+        signExtend(packed.x << 18u, 25u),
+        signExtend(packed.x << 11u, 25u)
+    );
+    float3 sh1_1 = float3(
+        signExtend(packed.x << 4u, 25u),
+        signExtend((packed.x >> 3u) | (packed.y << 29u), 25u),
+        signExtend(packed.y << 22u, 25u)
+    );
+    float3 sh1_2 = float3(
+        signExtend(packed.y << 15u, 25u),
+        signExtend(packed.y << 8u, 25u),
+        signExtend(packed.y << 1u, 25u)
+    );
+
+    float3 rgb = sh1_0 * (-0.4886025 * viewDir.y)
+        + sh1_1 * (0.4886025 * viewDir.z)
+        + sh1_2 * (-0.4886025 * viewDir.x);
+    return rgb * (sh1Max / 63.0);
+}
+
+static float3 evaluatePackedSH2(uint4 packed, float3 viewDir, float sh2Max) {
+    float3 sh2_0 = float3(signExtend(packed.x, 24u), signExtend(packed.x << 16u, 24u), signExtend(packed.x << 8u, 24u));
+    float3 sh2_1 = float3(int(packed.x) >> 24, signExtend(packed.y, 24u), signExtend(packed.y << 16u, 24u));
+    float3 sh2_2 = float3(signExtend(packed.y << 8u, 24u), int(packed.y) >> 24, signExtend(packed.z, 24u));
+    float3 sh2_3 = float3(signExtend(packed.z << 16u, 24u), signExtend(packed.z << 8u, 24u), int(packed.z) >> 24);
+    float3 sh2_4 = float3(signExtend(packed.w, 24u), signExtend(packed.w << 16u, 24u), signExtend(packed.w << 8u, 24u));
+
+    float3 rgb = sh2_0 * (1.0925484 * viewDir.x * viewDir.y)
+        + sh2_1 * (-1.0925484 * viewDir.y * viewDir.z)
+        + sh2_2 * (0.3153915 * (2.0 * viewDir.z * viewDir.z - viewDir.x * viewDir.x - viewDir.y * viewDir.y))
+        + sh2_3 * (-1.0925484 * viewDir.x * viewDir.z)
+        + sh2_4 * (0.5462742 * (viewDir.x * viewDir.x - viewDir.y * viewDir.y));
+    return rgb * (sh2Max / 127.0);
+}
+
+static float3 evaluatePackedSH3(uint4 packed, float3 viewDir, float sh3Max) {
+    float3 sh3_0 = float3(signExtend(packed.x, 26u), signExtend(packed.x << 20u, 26u), signExtend(packed.x << 14u, 26u));
+    float3 sh3_1 = float3(signExtend(packed.x << 8u, 26u), signExtend(packed.x << 2u, 26u), signExtend((packed.x >> 4u) | (packed.y << 28u), 26u));
+    float3 sh3_2 = float3(signExtend(packed.y << 22u, 26u), signExtend(packed.y << 16u, 26u), signExtend(packed.y << 10u, 26u));
+    float3 sh3_3 = float3(signExtend(packed.y << 4u, 26u), signExtend((packed.y >> 2u) | (packed.z << 30u), 26u), signExtend(packed.z << 24u, 26u));
+    float3 sh3_4 = float3(signExtend(packed.z << 18u, 26u), signExtend(packed.z << 12u, 26u), signExtend(packed.z << 6u, 26u));
+    float3 sh3_5 = float3(int(packed.z) >> 26, signExtend(packed.w << 26u, 26u), signExtend(packed.w << 20u, 26u));
+    float3 sh3_6 = float3(signExtend(packed.w << 14u, 26u), signExtend(packed.w << 8u, 26u), signExtend(packed.w << 2u, 26u));
+
+    float xx = viewDir.x * viewDir.x;
+    float yy = viewDir.y * viewDir.y;
+    float zz = viewDir.z * viewDir.z;
+    float xy = viewDir.x * viewDir.y;
+
+    float3 rgb = sh3_0 * (-0.5900436 * viewDir.y * (3.0 * xx - yy))
+        + sh3_1 * (2.8906114 * xy * viewDir.z)
+        + sh3_2 * (-0.4570458 * viewDir.y * (4.0 * zz - xx - yy))
+        + sh3_3 * (0.3731763 * viewDir.z * (2.0 * zz - 3.0 * xx - 3.0 * yy))
+        + sh3_4 * (-0.4570458 * viewDir.x * (4.0 * zz - xx - yy))
+        + sh3_5 * (1.4453057 * viewDir.z * (xx - yy))
+        + sh3_6 * (-0.5900436 * viewDir.x * (xx - 3.0 * yy));
+    return rgb * (sh3Max / 31.0);
+}
+
 static SplatVertexData culledSplatVertex() {
     SplatVertexData out;
     out.position = float4(0.0, 0.0, 2.0, 1.0);
@@ -144,7 +212,10 @@ vertex SplatVertexData splatVertex(
     constant VertexUniforms *vertexUniforms [[buffer(VertexBufferVertexUniforms)]],
     constant SplatUniforms &uniforms [[buffer(VertexBufferMaterialUniforms)]],
     constant uint4 *packedSplats [[buffer(VertexBufferCustom0)]],
-    constant uint *ordering [[buffer(VertexBufferCustom1)]]
+    constant uint *ordering [[buffer(VertexBufferCustom1)]],
+    constant uint2 *sh1 [[buffer(VertexBufferCustom2)]],
+    constant uint4 *sh2 [[buffer(VertexBufferCustom3)]],
+    constant uint4 *sh3 [[buffer(VertexBufferCustom4)]]
 ) {
     if (instanceID >= uniforms.numSplats) {
         return culledSplatVertex();
@@ -222,6 +293,20 @@ vertex SplatVertexData splatVertex(
     }
 
     constant VertexUniforms &vu = vertexUniforms[amp_id];
+    if (uniforms.shDegree > 0u) {
+        float3 worldCenter = (vu.modelMatrix * float4(center, 1.0)).xyz;
+        float3 viewDir = normalize(worldCenter - vu.worldCameraPosition);
+        if (uniforms.shDegree >= 1u) {
+            rgba.rgb += evaluatePackedSH1(sh1[splatIndex], viewDir, uniforms.shMax.x);
+        }
+        if (uniforms.shDegree >= 2u) {
+            rgba.rgb += evaluatePackedSH2(sh2[splatIndex], viewDir, uniforms.shMax.y);
+        }
+        if (uniforms.shDegree >= 3u) {
+            rgba.rgb += evaluatePackedSH3(sh3[splatIndex], viewDir, uniforms.shMax.z);
+        }
+    }
+
     float3 viewCenter = (vu.modelViewMatrix * float4(center, 1.0)).xyz;
     if (viewCenter.z >= 0.0) {
         return culledSplatVertex();

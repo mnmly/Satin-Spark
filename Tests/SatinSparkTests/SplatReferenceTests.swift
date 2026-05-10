@@ -1,6 +1,9 @@
 import Foundation
+import CoreGraphics
+import ImageIO
 import SatinSpark
 import Testing
+import UniformTypeIdentifiers
 import simd
 
 @Suite
@@ -250,6 +253,224 @@ struct SplatReferenceTests {
         expectApproximatelyEqual(splat.scale.y, exp(-2.5), tolerance: 0.004)
         expectApproximatelyEqual(splat.scale.z, exp(-2.0), tolerance: 0.004)
     }
+
+    @Test
+    func plyLoaderPacksSphericalHarmonics() throws {
+        var header = [
+            "ply",
+            "format ascii 1.0",
+            "element vertex 1",
+            "property float x",
+            "property float y",
+            "property float z",
+            "property float f_dc_0",
+            "property float f_dc_1",
+            "property float f_dc_2",
+            "property float opacity",
+            "property float scale_0",
+            "property float scale_1",
+            "property float scale_2",
+            "property float rot_0",
+            "property float rot_1",
+            "property float rot_2",
+            "property float rot_3",
+        ]
+        for index in 0 ..< 9 {
+            header.append("property float f_rest_\(index)")
+        }
+        header.append("end_header")
+
+        let shValues: [Float] = [
+            0.25, -0.25, 0.5,
+            -0.5, 0.75, -0.75,
+            1.0, -1.0, 0.125,
+        ]
+        let baseValues: [Float] = [0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, -3.0, -3.0, -3.0, 1.0, 0.0, 0.0, 0.0]
+        var values = baseValues
+        values.append(contentsOf: shValues)
+        let row = values
+            .map { String($0) }
+            .joined(separator: " ")
+        let ply = header.joined(separator: "\n") + "\n" + row + "\n"
+
+        let splats = try SplatPLYLoader.parse(Data(ply.utf8))
+        #expect(splats.sphericalHarmonics.degree == 1)
+        #expect(splats.sphericalHarmonics.sh1?.count == 2)
+        #expect(splats.sphericalHarmonics.sh2 == nil)
+        #expect(splats.sphericalHarmonics.sh3 == nil)
+        #expect(splats.sphericalHarmonics.sh1 != [0, 0])
+    }
+
+    @Test
+    func loaderDetectsSparkFileTypes() {
+        #expect(SplatLoader.fileType(for: Data("ply\n".utf8)) == .ply)
+        #expect(SplatLoader.fileType(for: Data([0x1f, 0x8b, 0x08, 0x00])) == .spz)
+        #expect(SplatLoader.fileType(for: Data([0x4e, 0x47, 0x53, 0x50])) == .spz)
+        #expect(SplatLoader.fileType(for: Data([0x50, 0x4b, 0x03, 0x04])) == .pcsogszip)
+        #expect(SplatLoader.fileType(for: Data([0x52, 0x41, 0x44, 0x30])) == .rad)
+        #expect(SplatLoader.fileType(for: Data(), path: "/tmp/model.splat") == .splat)
+        #expect(SplatLoader.fileType(for: Data(), path: "/tmp/model.ksplat") == .ksplat)
+        #expect(SplatLoader.fileType(for: Data(), path: "/tmp/model.sog") == .pcsogszip)
+        #expect(SplatLoader.fileType(for: Data(), path: "/tmp/meta.json") == .pcsogs)
+    }
+
+    @Test
+    func loaderRoutesPlyThroughPublicDispatcher() throws {
+        let ply = """
+        ply
+        format ascii 1.0
+        element vertex 1
+        property float x
+        property float y
+        property float z
+        property uchar red
+        property uchar green
+        property uchar blue
+        property uchar alpha
+        end_header
+        0.25 -0.5 1.0 64 128 255 192
+        """
+
+        let splats = try SplatLoader.parse(Data(ply.utf8), path: "/tmp/fixture.ply")
+        let splat = splats.getSplat(at: 0)
+        expectApproximatelyEqual(splat.center, [0.25, -0.5, 1.0], tolerance: 0.00001)
+        expectApproximatelyEqual(splat.color, [Float(64.0 / 255.0), Float(128.0 / 255.0), 1.0], tolerance: 0.002)
+        expectApproximatelyEqual(splat.opacity, 192.0 / 255.0, tolerance: 0.002)
+    }
+
+    @Test
+    func pcsogsLoaderPacksSphericalHarmonics() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("satin-spark-pcsogs-sh-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        try writePNG([0, 0, 0, 255], width: 1, height: 1, to: directory.appendingPathComponent("means_l.png"))
+        try writePNG([0, 0, 0, 255], width: 1, height: 1, to: directory.appendingPathComponent("means_h.png"))
+        try writePNG([0, 0, 0, 255], width: 1, height: 1, to: directory.appendingPathComponent("scales.png"))
+        try writePNG([128, 128, 128, 252], width: 1, height: 1, to: directory.appendingPathComponent("quats.png"))
+        try writePNG([128, 128, 128, 255], width: 1, height: 1, to: directory.appendingPathComponent("sh0.png"))
+        try writePNG([0, 0, 0, 255], width: 1, height: 1, to: directory.appendingPathComponent("labels.png"))
+
+        var centroids = Array(repeating: UInt8(128), count: 15 * 4)
+        for index in 0 ..< 15 {
+            centroids[index * 4 + 3] = 255
+        }
+        centroids[0] = 192
+        centroids[5] = 64
+        centroids[10] = 255
+        try writePNG(centroids, width: 15, height: 1, to: directory.appendingPathComponent("shn_centroids.png"))
+
+        let zeroCodebook = Array(repeating: 0.0, count: 256)
+        let shCodebook = (0 ..< 256).map { (Double($0) - 128.0) / 128.0 }
+        let metadata: [String: Any] = [
+            "version": 2,
+            "count": 1,
+            "means": [
+                "mins": [0.0, 0.0, 0.0],
+                "maxs": [0.0, 0.0, 0.0],
+                "files": ["means_l.png", "means_h.png"],
+            ],
+            "scales": [
+                "codebook": zeroCodebook,
+                "files": ["scales.png"],
+            ],
+            "quats": [
+                "files": ["quats.png"],
+            ],
+            "sh0": [
+                "codebook": zeroCodebook,
+                "files": ["sh0.png"],
+            ],
+            "shN": [
+                "bands": 1,
+                "codebook": shCodebook,
+                "files": ["shn_centroids.png", "labels.png"],
+            ],
+        ]
+        let metadataData = try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys])
+
+        let splats = try SplatPCSOGSLoader.parse(metadataData, baseURL: directory)
+        #expect(splats.numSplats == 1)
+        #expect(splats.sphericalHarmonics.degree == 1)
+        #expect(splats.sphericalHarmonics.sh1?.count == 2)
+        #expect(splats.sphericalHarmonics.sh1 != [0, 0])
+    }
+
+    @Test
+    func rawSplatLoaderParsesSparkAntisplatRecords() throws {
+        var data = Data()
+        appendFloat32(1.0, to: &data)
+        appendFloat32(-2.0, to: &data)
+        appendFloat32(3.0, to: &data)
+        appendFloat32(0.05, to: &data)
+        appendFloat32(0.08, to: &data)
+        appendFloat32(0.11, to: &data)
+        data.append(contentsOf: [26, 128, 230, 204])
+        data.append(contentsOf: [255, 128, 128, 128])
+
+        let splats = try SplatLoader.parse(data, path: "/tmp/fixture.splat")
+        #expect(splats.numSplats == 1)
+
+        let splat = splats.getSplat(at: 0)
+        expectApproximatelyEqual(splat.center, [1.0, -2.0, 3.0], tolerance: 0.00001)
+        expectApproximatelyEqual(
+            splat.color,
+            [Float(26.0 / 255.0), Float(128.0 / 255.0), Float(230.0 / 255.0)],
+            tolerance: 0.002
+        )
+        expectApproximatelyEqual(splat.opacity, 204.0 / 255.0, tolerance: 0.002)
+        expectApproximatelyEqual(splat.scale, [0.05, 0.08, 0.11], tolerance: 0.004)
+    }
+
+    @Test
+    func rawSplatLoaderRejectsTruncatedRecords() {
+        do {
+            _ = try SplatRawSplatLoader.parse(Data(repeating: 0, count: 31))
+            #expect(Bool(false), "Expected invalid .splat byte count to throw")
+        } catch SplatRawSplatLoaderError.invalidByteCount(31) {
+            #expect(Bool(true))
+        } catch {
+            #expect(Bool(false), "Unexpected error: \(error)")
+        }
+    }
+
+    @Test
+    func spzLoaderParsesVersion3FixedPointRecords() throws {
+        let splats = try SplatLoader.parse(makeSPZFixtureData(), path: "/tmp/fixture.spz")
+        #expect(splats.numSplats == 1)
+
+        let splat = splats.getSplat(at: 0)
+        expectApproximatelyEqual(splat.center, [1.0, -2.0, 3.0], tolerance: 0.00001)
+        expectApproximatelyEqual(
+            splat.color,
+            [spzColor(128), spzColor(64), spzColor(255)],
+            tolerance: 0.003
+        )
+        expectApproximatelyEqual(splat.opacity, 204.0 / 255.0, tolerance: 0.002)
+        expectApproximatelyEqual(
+            splat.scale,
+            [exp(Float(112) / 16.0 - 10.0), exp(Float(120) / 16.0 - 10.0), exp(Float(128) / 16.0 - 10.0)],
+            tolerance: 0.006
+        )
+        #expect(splats.sphericalHarmonics.degree == 1)
+        #expect(splats.sphericalHarmonics.sh1?.count == 2)
+        #expect(splats.sphericalHarmonics.sh1 != [0, 0])
+    }
+
+    @Test
+    func spzLoaderInflatesGzipWrappedFiles() throws {
+        let gzipFixture = Data([
+            31, 139, 8, 0, 0, 0, 0, 0, 2, 19, 243, 115, 15, 14, 96, 102,
+            96, 96, 96, 4, 98, 6, 30, 32, 22, 96, 96, 120, 240, 159, 193, 128,
+            225, 76, 131, 195, 255, 130, 138, 6, 160, 200, 1, 0, 151, 81, 98,
+            224, 36, 0, 0, 0,
+        ])
+
+        let splats = try SplatLoader.parse(gzipFixture, path: "/tmp/fixture.spz")
+        #expect(splats.numSplats == 1)
+        expectApproximatelyEqual(splats.getSplat(at: 0).center, [1.0, -2.0, 3.0], tolerance: 0.00001)
+    }
+
 }
 
 private func expectApproximatelyEqual(_ actual: Float, _ expected: Float, tolerance: Float) {
@@ -267,6 +488,70 @@ private func expectApproximatelyEqual(_ actual: SIMD4<Float>, _ expected: SIMD4<
     expectApproximatelyEqual(actual.y, expected.y, tolerance: tolerance)
     expectApproximatelyEqual(actual.z, expected.z, tolerance: tolerance)
     expectApproximatelyEqual(actual.w, expected.w, tolerance: tolerance)
+}
+
+private func appendFloat32(_ value: Float, to data: inout Data) {
+    var bitPattern = value.bitPattern.littleEndian
+    withUnsafeBytes(of: &bitPattern) { data.append(contentsOf: $0) }
+}
+
+private func makeSPZFixtureData() -> Data {
+    var data = Data()
+    appendUInt32(0x5053474e, to: &data)
+    appendUInt32(3, to: &data)
+    appendUInt32(1, to: &data)
+    data.append(contentsOf: [1, 12, 0, 0])
+    appendInt24(4096, to: &data)
+    appendInt24(-8192, to: &data)
+    appendInt24(12288, to: &data)
+    data.append(204)
+    data.append(contentsOf: [128, 64, 255])
+    data.append(contentsOf: [112, 120, 128])
+    data.append(contentsOf: [0, 0, 0, 0xc0])
+    data.append(contentsOf: [160, 96, 192, 64, 224, 32, 255, 0, 144])
+    return data
+}
+
+private func appendUInt32(_ value: UInt32, to data: inout Data) {
+    var littleEndian = value.littleEndian
+    withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
+}
+
+private func appendInt24(_ value: Int32, to data: inout Data) {
+    let unsigned = UInt32(bitPattern: value) & 0x00ff_ffff
+    data.append(UInt8(unsigned & 0xff))
+    data.append(UInt8((unsigned >> 8) & 0xff))
+    data.append(UInt8((unsigned >> 16) & 0xff))
+}
+
+private func spzColor(_ byte: UInt8) -> Float {
+    let scale = Float(0.28209479177387814 / 0.15)
+    return min(max((Float(byte) / 255.0 - 0.5) * scale + 0.5, 0.0), 1.0)
+}
+
+private func writePNG(_ pixels: [UInt8], width: Int, height: Int, to url: URL) throws {
+    precondition(pixels.count == width * height * 4)
+    var pixels = pixels
+    let data = NSMutableData()
+    try pixels.withUnsafeMutableBytes { bytes in
+        guard let context = CGContext(
+            data: bytes.baseAddress,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let image = context.makeImage(),
+           let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+    }
+    try (data as Data).write(to: url)
 }
 
 private func translationMatrix(_ translation: SIMD3<Float>) -> simd_float4x4 {

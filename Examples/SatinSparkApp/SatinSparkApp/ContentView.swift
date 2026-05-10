@@ -27,7 +27,16 @@ struct ContentView: View {
     @State private var importTask: Task<Void, Never>?
 
     private let initialURL: URL?
-    private let plyType = UTType(filenameExtension: "ply") ?? .data
+    private let splatTypes = [
+        "ply",
+        "splat",
+        "spz",
+        "ksplat",
+        "sog",
+        "pcsogs",
+        "pcsogszip",
+        "rad",
+    ].compactMap { UTType(filenameExtension: $0) }
 
     init(initialURL: URL? = nil) {
         self.initialURL = initialURL
@@ -43,7 +52,7 @@ struct ContentView: View {
                     Button {
                         isImporterPresented = true
                     } label: {
-                        Label("Open PLY", systemImage: "folder")
+                        Label("Open Splat", systemImage: "folder")
                     }
 
                     Text(selectedFileName)
@@ -70,28 +79,28 @@ struct ContentView: View {
         }
         .fileImporter(
             isPresented: $isImporterPresented,
-            allowedContentTypes: [plyType],
+            allowedContentTypes: splatTypes.isEmpty ? [.data] : splatTypes,
             allowsMultipleSelection: false
         ) { result in
-            importPLY(result)
+            importSplats(result)
         }
         .task {
             guard let initialURL else { return }
-            importPLY(initialURL)
+            importSplats(initialURL)
         }
     }
 
-    private func importPLY(_ result: Result<[URL], any Error>) {
+    private func importSplats(_ result: Result<[URL], any Error>) {
         do {
             guard let url = try result.get().first else { return }
-            importPLY(url)
+            importSplats(url)
         } catch {
             importError = error.localizedDescription
             statusText = "Import failed"
         }
     }
 
-    private func importPLY(_ url: URL) {
+    private func importSplats(_ url: URL) {
         importTask?.cancel()
         selectedFileName = url.lastPathComponent
         statusText = "Loading..."
@@ -106,7 +115,7 @@ struct ContentView: View {
                             url.stopAccessingSecurityScopedResource()
                         }
                     }
-                    let packedSplats = try SplatPLYLoader.load(url: url)
+                    let packedSplats = try SplatLoader.load(url: url)
                     return ImportedPackedSplats(
                         packedArray: packedSplats.packedArray,
                         numSplats: packedSplats.numSplats,

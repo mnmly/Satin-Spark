@@ -3,7 +3,7 @@ import SatinSpark
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 guard arguments.count >= 2 else {
-    fputs("usage: satin-spark-pack-dump <input.ply> <output.bin>\n", stderr)
+    fputs("usage: satin-spark-pack-dump <input.ply|input.splat|...> <output.bin>\n", stderr)
     exit(2)
 }
 
@@ -14,7 +14,7 @@ do {
     if inputArg == "fixture" {
         splats = SplatFixtures.deterministicScene()
     } else {
-        splats = try SplatPLYLoader.load(url: URL(fileURLWithPath: inputArg))
+        splats = try SplatLoader.load(url: URL(fileURLWithPath: inputArg))
     }
 
     var data = Data()

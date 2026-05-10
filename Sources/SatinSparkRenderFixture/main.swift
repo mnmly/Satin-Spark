@@ -32,7 +32,7 @@ let clearColor: SIMD4<Float> = legacySparkBlending
     : linearClearColor
 
 do {
-    let packedSplats = try inputURL.map(SplatPLYLoader.load(url:))
+    let packedSplats = try inputURL.map { try SplatLoader.load(url: $0) }
     let result = try renderFixture(
         size: size,
         clearColor: clearColor,

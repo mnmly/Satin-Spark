@@ -176,20 +176,19 @@ splats sort in different orders due to fp ordering of compares — both correct)
 
 ## Next Steps
 
-1. **Banana parity investigation** — extract a single high-opacity banana splat
-   into its own packed binary, render in both engines, compare projected radius
-   and per-splat falloff. Until that's pinned, dense-scene mae will stay in the
-   30s. Sort metric (radial vs viewZ) moves parity by <1% so it's not the
-   dominant residual.
-2. **Reuse ordering buffer storage** in the CPU sort fallback (currently
-   reallocates each refresh; the GPU path already reuses).
-3. Port `SplatLoader` format-by-format, beginning with `.splat`.
-4. Add extended splats, SH data, LOD, paging, and edit/skinning features.
+1. Port `SplatLoader` format-by-format, beginning with `.splat`.
+2. Once loaders are in place, add extended splats, SH data, LOD, paging, and
+   edit/skinning features.
+
+Parity is now measured against `biker.ply` rather than the earlier banana
+fixture. The CPU sort is retained only as a test oracle and `SATIN_SPARK_SORT=cpu`
+A/B toggle; no further optimization (e.g. ordering-buffer reuse) is planned for
+that path since it does not run at runtime.
 
 ## Deliberate Deferrals
 
 - Dyno shader graph.
-- WebXR/control helpers.
+- WebXR/control helpers (not planned).
 - Portal rendering.
 - SOG/SPZ/KSPLAT support until the base loader shape is established.
 - GPU LOD traversal and paging until sorted packed rendering is stable.

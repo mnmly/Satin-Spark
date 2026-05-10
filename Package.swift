@@ -42,6 +42,9 @@ let package = Package(
             ],
             resources: [
                 .copy("Pipelines"),
+            ],
+            linkerSettings: [
+                .linkedLibrary("z"),
             ]
         ),
         .executableTarget(
