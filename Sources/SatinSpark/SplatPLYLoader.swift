@@ -1,3 +1,9 @@
+// PLY decoding conventions (sigmoid opacity, `SH_C0 * f_dc + 0.5` color, alpha
+// divisors) are ported from https://github.com/sparkjsdev/spark — `src/ply.ts`.
+// Spark is MIT-licensed; see THIRD_PARTY_NOTICES.md for the full attribution.
+// Copyright © 2025 World Labs Technologies, Inc. (upstream)
+// Copyright © 2026 Hiroaki Yamane (this port)
+
 import Foundation
 import simd
 

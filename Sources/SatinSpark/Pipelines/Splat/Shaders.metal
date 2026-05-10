@@ -1,3 +1,9 @@
+// Ported from https://github.com/sparkjsdev/spark — `src/shaders/splatVertex.glsl`,
+// `src/shaders/splatFragment.glsl`, and helpers from `src/shaders/splatDefines.glsl`.
+// Spark is MIT-licensed; see THIRD_PARTY_NOTICES.md for the full attribution.
+// Copyright © 2025 World Labs Technologies, Inc. (upstream)
+// Copyright © 2026 Hiroaki Yamane (this port)
+
 #include <metal_stdlib>
 using namespace metal;
 

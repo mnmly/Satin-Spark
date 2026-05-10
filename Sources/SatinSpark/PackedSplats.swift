@@ -1,3 +1,9 @@
+// Packed splat byte layout, encoding helpers, and PLY-side conventions are ported
+// from https://github.com/sparkjsdev/spark — `src/utils.ts`, `src/PackedSplats.ts`.
+// Spark is MIT-licensed; see THIRD_PARTY_NOTICES.md for the full attribution.
+// Copyright © 2025 World Labs Technologies, Inc. (upstream)
+// Copyright © 2026 Hiroaki Yamane (this port)
+
 import Foundation
 import Metal
 import simd

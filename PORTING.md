@@ -4,6 +4,12 @@ This package should track Spark's architecture directly where practical. The WAB
 Gaussian splat code is useful for Satin/Metal mechanics, but it is not the source
 shape for this port.
 
+> **License & upstream:** ports of Spark (MIT) and dependence on Satin (MIT) are
+> attributed in [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md). When Spark
+> upstream changes, follow the playbook in [`UPSTREAM.md`](./UPSTREAM.md) — the
+> pinned commit, parity-harness command list, and acceptance thresholds live
+> there.
+
 ## Current MVP
 
 - `PackedSplats` mirrors Spark's 16-byte packed splat representation:
