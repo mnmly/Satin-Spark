@@ -32,7 +32,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(path: "../Satin"),
+	.package(url: "https://github.com/mnmly/Satin", branch: "feature/2.0-shader-source-transforms")
     ],
     targets: [
         .target(

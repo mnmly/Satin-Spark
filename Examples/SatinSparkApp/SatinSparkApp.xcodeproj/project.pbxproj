@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		9940652B2FB0519A00491B45 /* SatinSpark in Frameworks */ = {isa = PBXBuildFile; productRef = 9940652A2FB0519A00491B45 /* SatinSpark */; };
+		99C7A4D42FB0EFE300279A6B /* SatinSpark in Frameworks */ = {isa = PBXBuildFile; productRef = 99C7A4D32FB0EFE300279A6B /* SatinSpark */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,6 +28,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				99C7A4D42FB0EFE300279A6B /* SatinSpark in Frameworks */,
 				9940652B2FB0519A00491B45 /* SatinSpark in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -71,6 +73,7 @@
 			name = SatinSparkApp;
 			packageProductDependencies = (
 				9940652A2FB0519A00491B45 /* SatinSpark */,
+				99C7A4D32FB0EFE300279A6B /* SatinSpark */,
 			);
 			productName = SatinSparkApp;
 			productReference = 9940651B2FB0511500491B45 /* SatinSparkApp.app */;
@@ -101,7 +104,7 @@
 			mainGroup = 994065122FB0511500491B45;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				994065292FB0519A00491B45 /* XCLocalSwiftPackageReference "../../../Satin-Spark" */,
+				99C7A4D22FB0EFE300279A6B /* XCLocalSwiftPackageReference "../../../Satin-Spark" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9940651C2FB0511500491B45 /* Products */;
@@ -362,7 +365,7 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		994065292FB0519A00491B45 /* XCLocalSwiftPackageReference "../../../Satin-Spark" */ = {
+		99C7A4D22FB0EFE300279A6B /* XCLocalSwiftPackageReference "../../../Satin-Spark" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "../../../Satin-Spark";
 		};
@@ -370,6 +373,10 @@
 
 /* Begin XCSwiftPackageProductDependency section */
 		9940652A2FB0519A00491B45 /* SatinSpark */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SatinSpark;
+		};
+		99C7A4D32FB0EFE300279A6B /* SatinSpark */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SatinSpark;
 		};
