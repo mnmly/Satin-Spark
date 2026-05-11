@@ -27,6 +27,7 @@ typedef struct {
     uint numSplats;
     uint debugMode;
     uint shDegree;
+    uint lodOpacity;
     uint legacySparkBlending;      // 1 = byte-parity with three.js Spark fixture
 } SplatUniforms;
 
@@ -269,9 +270,10 @@ vertex SplatVertexData splatVertex(
         return out;
     }
 
-    // Note: Spark's vertex shader does `rgba.a *= 2.0` here, but its SplatAccumulator
-    // pre-halves opacity (`mul(opacity, 0.5)` in SplatAccumulator.ts) so the round-trip
-    // is identity. We pack opacity directly without halving, so we skip the doubling.
+    if (uniforms.lodOpacity != 0u) {
+        rgba.a *= 2.0;
+    }
+
     if (rgba.a <= 0.0 || rgba.a < uniforms.minAlpha || all(scales == float3(0.0))) {
         return culledSplatVertex();
     }

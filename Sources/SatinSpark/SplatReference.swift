@@ -19,6 +19,34 @@ public struct ProjectedSplat: Sendable, Equatable {
     public var rgba: SIMD4<Float>
 }
 
+public struct SplatProjectionSettings: Sendable, Equatable {
+    public var maxStdDev: Float
+    public var minPixelRadius: Float
+    public var maxPixelRadius: Float
+    public var minAlpha: Float
+    public var preBlurAmount: Float
+    public var blurAmount: Float
+    public var focalAdjustment: Float
+
+    public init(
+        maxStdDev: Float = sqrt(8.0),
+        minPixelRadius: Float = 0.0,
+        maxPixelRadius: Float = 512.0,
+        minAlpha: Float = 0.5 / 255.0,
+        preBlurAmount: Float = 0.0,
+        blurAmount: Float = 0.3,
+        focalAdjustment: Float = 1.0
+    ) {
+        self.maxStdDev = maxStdDev
+        self.minPixelRadius = minPixelRadius
+        self.maxPixelRadius = maxPixelRadius
+        self.minAlpha = minAlpha
+        self.preBlurAmount = preBlurAmount
+        self.blurAmount = blurAmount
+        self.focalAdjustment = focalAdjustment
+    }
+}
+
 public enum SplatReference {
     public static func decodePackedSplat(_ words: SIMD4<UInt32>, encoding: SplatEncoding = SplatEncoding()) -> DecodedSplat {
         let rgbaBytes = SIMD4<UInt32>(
@@ -70,14 +98,34 @@ public enum SplatReference {
         maxPixelRadius: Float = 1024.0,
         minAlpha: Float = 1.0 / 255.0
     ) -> ProjectedSplat? {
-        var rgba = splat.rgba
-        rgba.w *= 2.0
-        guard rgba.w > 0.0, rgba.w >= minAlpha, splat.scales != .zero else { return nil }
+        project(
+            splat,
+            modelViewMatrix: modelViewMatrix,
+            projectionMatrix: projectionMatrix,
+            renderSize: renderSize,
+            settings: SplatProjectionSettings(
+                maxStdDev: maxStdDev,
+                minPixelRadius: minPixelRadius,
+                maxPixelRadius: maxPixelRadius,
+                minAlpha: minAlpha
+            )
+        )
+    }
 
-        var adjustedStdDev = maxStdDev
+    public static func project(
+        _ splat: DecodedSplat,
+        modelViewMatrix: simd_float4x4,
+        projectionMatrix: simd_float4x4,
+        renderSize: SIMD2<Float>,
+        settings: SplatProjectionSettings = SplatProjectionSettings()
+    ) -> ProjectedSplat? {
+        var rgba = splat.rgba
+        guard rgba.w > 0.0, rgba.w >= settings.minAlpha, splat.scales != .zero else { return nil }
+
+        var adjustedStdDev = settings.maxStdDev
         if rgba.w > 1.0 {
             rgba.w = min(rgba.w * 4.0 - 3.0, 5.0)
-            adjustedStdDev = maxStdDev + 0.7 * (rgba.w - 1.0)
+            adjustedStdDev = settings.maxStdDev + 0.7 * (rgba.w - 1.0)
         }
 
         let viewCenter4 = modelViewMatrix * SIMD4<Float>(splat.center, 1.0)
@@ -97,7 +145,8 @@ public enum SplatReference {
         let cov3D = viewRS * viewRS.transpose
 
         let safeRenderSize = max(renderSize, SIMD2<Float>(repeating: 1.0))
-        let focal = 0.5 * safeRenderSize * SIMD2<Float>(projectionMatrix.columns.0.x, projectionMatrix.columns.1.y)
+        let scaledRenderSize = safeRenderSize * settings.focalAdjustment
+        let focal = 0.5 * scaledRenderSize * SIMD2<Float>(projectionMatrix.columns.0.x, projectionMatrix.columns.1.y)
         let invZ = 1.0 / viewCenter.z
         let j1 = focal * invZ
         let j2 = -(j1 * viewCenter.xy) * invZ
@@ -111,9 +160,16 @@ public enum SplatReference {
         var a = cov2D.columns.0.x
         var d = cov2D.columns.1.y
         let b = cov2D.columns.0.y
-        a += 0.3
-        d += 0.3
+        a += settings.preBlurAmount
+        d += settings.preBlurAmount
+        let detOrig = a * d - b * b
+        a += settings.blurAmount
+        d += settings.blurAmount
         let det = a * d - b * b
+        rgba.w *= sqrt(max(0.0, detOrig / det))
+        if rgba.w < settings.minAlpha {
+            return nil
+        }
 
         let eigenAverage = 0.5 * (a + d)
         let eigenDelta = sqrt(max(0.0, eigenAverage * eigenAverage - det))
@@ -127,9 +183,9 @@ public enum SplatReference {
             axis1 = a >= d ? SIMD2<Float>(1.0, 0.0) : SIMD2<Float>(0.0, 1.0)
         }
         let axis2 = SIMD2<Float>(axis1.y, -axis1.x)
-        let radius1 = min(maxPixelRadius, adjustedStdDev * sqrt(eigen1))
-        let radius2 = min(maxPixelRadius, adjustedStdDev * sqrt(eigen2))
-        guard radius1 >= minPixelRadius || radius2 >= minPixelRadius else { return nil }
+        let radius1 = min(settings.maxPixelRadius, adjustedStdDev * sqrt(eigen1))
+        let radius2 = min(settings.maxPixelRadius, adjustedStdDev * sqrt(eigen2))
+        guard radius1 >= settings.minPixelRadius || radius2 >= settings.minPixelRadius else { return nil }
 
         return ProjectedSplat(
             ndcCenter: clipCenter.xyz / clipCenter.w,

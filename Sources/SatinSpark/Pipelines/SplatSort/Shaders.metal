@@ -43,6 +43,37 @@ kernel void splatSortComputeKeys(
     indices[tid] = tid;
 }
 
+kernel void splatSortComputeKeysFromOrdering(
+    constant uint4 *packedSplats [[buffer(0)]],
+    constant uint *ordering [[buffer(1)]],
+    device float *keys [[buffer(2)]],
+    device uint *indices [[buffer(3)]],
+    constant SplatSortParams &params [[buffer(4)]],
+    uint tid [[thread_position_in_grid]]
+) {
+    if (tid >= params.count) {
+        return;
+    }
+    if (tid >= params.actualCount) {
+        keys[tid] = INFINITY;
+        indices[tid] = 0xffffffffu;
+        return;
+    }
+
+    uint splatIndex = ordering[tid];
+    if (splatIndex == 0xffffffffu || splatIndex >= params.actualCount) {
+        keys[tid] = INFINITY;
+        indices[tid] = 0xffffffffu;
+        return;
+    }
+
+    float3 center = decodeSplatCenter(packedSplats[splatIndex]);
+    float4 view = params.modelViewMatrix * float4(center, 1.0);
+    float key = (params.metricMode == 0u) ? view.z : -dot(view.xyz, view.xyz);
+    keys[tid] = key;
+    indices[tid] = splatIndex;
+}
+
 kernel void splatSortBitonicStep(
     device float *keys [[buffer(0)]],
     device uint *indices [[buffer(1)]],

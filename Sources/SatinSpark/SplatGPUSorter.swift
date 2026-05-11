@@ -17,6 +17,7 @@ public final class SplatGPUSorter {
 
     private let device: MTLDevice
     private let computeKeys: MTLComputePipelineState
+    private let computeKeysFromOrdering: MTLComputePipelineState
     private let bitonicStep: MTLComputePipelineState
 
     private var keysBuffer: MTLBuffer?
@@ -29,10 +30,12 @@ public final class SplatGPUSorter {
         let source = try String(contentsOf: url, encoding: .utf8)
         let library = try device.makeLibrary(source: source, options: nil)
         guard let computeKeysFn = library.makeFunction(name: "splatSortComputeKeys"),
+              let computeKeysFromOrderingFn = library.makeFunction(name: "splatSortComputeKeysFromOrdering"),
               let bitonicStepFn = library.makeFunction(name: "splatSortBitonicStep") else {
             throw NSError(domain: "SplatGPUSorter", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to find sort kernels"])
         }
         self.computeKeys = try device.makeComputePipelineState(function: computeKeysFn)
+        self.computeKeysFromOrdering = try device.makeComputePipelineState(function: computeKeysFromOrderingFn)
         self.bitonicStep = try device.makeComputePipelineState(function: bitonicStepFn)
     }
 
@@ -96,6 +99,68 @@ public final class SplatGPUSorter {
         // padding indices (0xffffffff) at the tail. Vertex shader culls those.
         guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
         blit.label = "SplatGPUSorter.copyOrdering"
+        let copyBytes = min(orderingBuffer.length, padded * MemoryLayout<UInt32>.stride)
+        blit.copy(from: indicesBuffer!, sourceOffset: 0, to: orderingBuffer, destinationOffset: 0, size: copyBytes)
+        blit.endEncoding()
+    }
+
+    /// Sort an existing ordering buffer in-place. Entries set to `0xffffffff`
+    /// receive +infinity keys and remain at the tail after sorting, which lets
+    /// callers compact a visible subset first and then keep the draw order
+    /// back-to-front entirely on the GPU.
+    public func encodeExistingOrdering(
+        commandBuffer: MTLCommandBuffer,
+        packedBuffer: MTLBuffer,
+        packedOffset: Int = 0,
+        orderingBuffer: MTLBuffer,
+        numSplats: Int,
+        modelViewMatrix: simd_float4x4,
+        metric: SplatSortMetric = .viewZ
+    ) {
+        guard numSplats > 0 else { return }
+        let padded = nextPowerOfTwo(numSplats)
+        ensureScratch(capacity: padded)
+
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        encoder.label = "SplatGPUSorter.existingOrdering"
+
+        var params = Params(
+            modelViewMatrix: modelViewMatrix,
+            count: UInt32(padded),
+            actualCount: UInt32(numSplats),
+            metricMode: metric == .viewZ ? 0 : 1,
+            k: 0,
+            j: 0
+        )
+
+        encoder.setComputePipelineState(computeKeysFromOrdering)
+        encoder.setBuffer(packedBuffer, offset: packedOffset, index: 0)
+        encoder.setBuffer(orderingBuffer, offset: 0, index: 1)
+        encoder.setBuffer(keysBuffer, offset: 0, index: 2)
+        encoder.setBuffer(indicesBuffer, offset: 0, index: 3)
+        encoder.setBytes(&params, length: MemoryLayout<Params>.stride, index: 4)
+        dispatch(encoder: encoder, pipeline: computeKeysFromOrdering, count: padded)
+
+        encoder.setComputePipelineState(bitonicStep)
+        encoder.setBuffer(keysBuffer, offset: 0, index: 0)
+        encoder.setBuffer(indicesBuffer, offset: 0, index: 1)
+
+        var k: UInt32 = 2
+        while k <= UInt32(padded) {
+            var j = k / 2
+            while j > 0 {
+                params.k = k
+                params.j = j
+                encoder.setBytes(&params, length: MemoryLayout<Params>.stride, index: 2)
+                dispatch(encoder: encoder, pipeline: bitonicStep, count: padded)
+                j /= 2
+            }
+            k *= 2
+        }
+        encoder.endEncoding()
+
+        guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+        blit.label = "SplatGPUSorter.copyExistingOrdering"
         let copyBytes = min(orderingBuffer.length, padded * MemoryLayout<UInt32>.stride)
         blit.copy(from: indicesBuffer!, sourceOffset: 0, to: orderingBuffer, destinationOffset: 0, size: copyBytes)
         blit.endEncoding()

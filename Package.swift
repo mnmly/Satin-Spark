@@ -71,7 +71,10 @@ let package = Package(
         ),
         .testTarget(
             name: "SatinSparkTests",
-            dependencies: ["SatinSpark"]
+            dependencies: ["SatinSpark"],
+            resources: [
+                .copy("Fixtures"),
+            ]
         ),
     ]
 )

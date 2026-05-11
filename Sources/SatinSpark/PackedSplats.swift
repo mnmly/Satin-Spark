@@ -13,7 +13,7 @@ public enum SplatSortMetric: Sendable, Equatable {
     case radial
 }
 
-public final class PackedSplats {
+public final class PackedSplats: @unchecked Sendable {
     public private(set) var maxSplats: Int
     public private(set) var numSplats: Int
     public private(set) var packedArray: [UInt32]

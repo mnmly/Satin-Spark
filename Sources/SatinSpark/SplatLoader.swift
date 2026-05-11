@@ -17,6 +17,9 @@ public enum SplatLoaderError: LocalizedError {
 public enum SplatLoader {
     public static func load(url: URL, fileType: SplatFileType? = nil) throws -> PackedSplats {
         let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        if (fileType ?? Self.fileType(for: data, path: url.path)) == .rad {
+            return try SplatRADLoader.load(url: url)
+        }
         return try parse(data, fileType: fileType, path: url.path)
     }
 
@@ -47,13 +50,7 @@ public enum SplatLoader {
         case .pcsogszip:
             return try SplatPCSOGSZipLoader.parse(data)
         case .rad:
-            if let header = try? SplatRADLoader.parseHeader(data) {
-                throw SplatLoaderError.unsupportedFormat(
-                    .rad,
-                    reason: "RAD is a paged format (\(header.metadata.count) splats across \(header.metadata.chunks.count) chunks); the header is ported, but chunk paging/rendering is not in the static PackedSplats loader yet."
-                )
-            }
-            throw SplatLoaderError.unsupportedFormat(.rad, reason: "RAD paged splat decoding is not ported yet.")
+            return try SplatRADLoader.parse(data)
         }
     }
 

@@ -85,16 +85,30 @@ private func parseSOGMetadataAndImages(
     readFile: (String) throws -> Data
 ) throws -> PackedSplats {
     let metadata = try JSONDecoder().decode(SOGMetadata.self, from: metadataData)
-    guard metadata.version == 2, let numSplats = metadata.count else {
+    if let version = metadata.version, version != 2 {
         throw SplatPCSOGSZipLoaderError.unsupportedVersion(metadata.version)
     }
+
+    let isVersion2 = metadata.version != nil
+    let numSplats: Int
+    if isVersion2 {
+        guard let count = metadata.count else {
+            throw SplatPCSOGSZipLoaderError.invalidMetadata
+        }
+        numSplats = count
+    } else {
+        guard metadata.quats.encoding == "quaternion_packed",
+              let count = metadata.means.shape?.first else {
+            throw SplatPCSOGSZipLoaderError.invalidMetadata
+        }
+        numSplats = count
+    }
+
     guard metadata.means.files.count >= 2,
           let meansMin = metadata.means.mins,
           let meansMax = metadata.means.maxs,
           meansMin.count >= 3,
           meansMax.count >= 3,
-          let scaleCodebook = metadata.scales.codebook,
-          let sh0Codebook = metadata.sh0.codebook,
           let scalesFile = metadata.scales.files.first,
           let quatsFile = metadata.quats.files.first,
           let sh0File = metadata.sh0.files.first else {
@@ -120,8 +134,32 @@ private func parseSOGMetadataAndImages(
 
     let sqrt2 = sqrt(Float(2.0))
     let quatLookup = (0 ..< 256).map { (Float($0) / 255.0 - 0.5) * sqrt2 }
-    let scaleLookup = scaleCodebook.map { exp(Float($0)) }
-    let colorLookup = sh0Codebook.map { Float(0.28209479177387814) * Float($0) + 0.5 }
+    let scaleLookup = try sogChannelLookups(
+        codebook: metadata.scales.codebook,
+        mins: metadata.scales.mins,
+        maxs: metadata.scales.maxs,
+        requiredChannels: 3,
+        transform: { exp($0) }
+    )
+    let colorLookup = try sogChannelLookups(
+        codebook: metadata.sh0.codebook,
+        mins: metadata.sh0.mins,
+        maxs: metadata.sh0.maxs,
+        requiredChannels: 4,
+        transform: { Float(0.28209479177387814) * $0 + 0.5 }
+    )
+    let opacityLookup: [Float]
+    if metadata.sh0.codebook != nil {
+        opacityLookup = (0 ..< 256).map { Float($0) / 255.0 }
+    } else {
+        opacityLookup = try sogChannelLookup(
+            codebook: nil,
+            mins: metadata.sh0.mins,
+            maxs: metadata.sh0.maxs,
+            channel: 3,
+            transform: { 1.0 / (1.0 + exp(-$0)) }
+        )
+    }
     var packedArray = Array(repeating: UInt32(0), count: numSplats * 4)
     let sphericalHarmonics = try decodeSOGSphericalHarmonics(
         metadata.shN,
@@ -147,9 +185,9 @@ private func parseSOGMetadataAndImages(
         )
 
         let scale = SIMD3<Float>(
-            scaleLookup[Int(scales.rgba[offset + 0])],
-            scaleLookup[Int(scales.rgba[offset + 1])],
-            scaleLookup[Int(scales.rgba[offset + 2])]
+            scaleLookup[0][Int(scales.rgba[offset + 0])],
+            scaleLookup[1][Int(scales.rgba[offset + 1])],
+            scaleLookup[2][Int(scales.rgba[offset + 2])]
         )
 
         let r0 = quatLookup[Int(quats.rgba[offset + 0])]
@@ -165,11 +203,11 @@ private func parseSOGMetadataAndImages(
         )
 
         let color = SIMD3<Float>(
-            colorLookup[Int(sh0.rgba[offset + 0])],
-            colorLookup[Int(sh0.rgba[offset + 1])],
-            colorLookup[Int(sh0.rgba[offset + 2])]
+            colorLookup[0][Int(sh0.rgba[offset + 0])],
+            colorLookup[1][Int(sh0.rgba[offset + 1])],
+            colorLookup[2][Int(sh0.rgba[offset + 2])]
         )
-        let opacity = Float(sh0.rgba[offset + 3]) / 255.0
+        let opacity = opacityLookup[Int(sh0.rgba[offset + 3])]
 
         writePackedSplatWords(
             center: center,
@@ -202,17 +240,25 @@ private struct SOGMetadata: Decodable {
 }
 
 private struct SOGRangeFiles: Decodable {
+    var shape: [Int]?
     var mins: [Double]?
     var maxs: [Double]?
     var files: [String]
 }
 
 private struct SOGCodebookFiles: Decodable {
+    var shape: [Int]?
+    var dtype: String?
+    var mins: [Double]?
+    var maxs: [Double]?
     var codebook: [Double]?
     var files: [String]
 }
 
 private struct SOGFiles: Decodable {
+    var shape: [Int]?
+    var dtype: String?
+    var encoding: String?
     var files: [String]
 }
 
@@ -237,6 +283,50 @@ private struct ZipEntry {
     var compressedSize: Int
     var uncompressedSize: Int
     var localHeaderOffset: Int
+}
+
+private func sogChannelLookups(
+    codebook: [Double]?,
+    mins: [Double]?,
+    maxs: [Double]?,
+    requiredChannels: Int,
+    transform: (Float) -> Float
+) throws -> [[Float]] {
+    try (0 ..< requiredChannels).map { channel in
+        try sogChannelLookup(
+            codebook: codebook,
+            mins: mins,
+            maxs: maxs,
+            channel: channel,
+            transform: transform
+        )
+    }
+}
+
+private func sogChannelLookup(
+    codebook: [Double]?,
+    mins: [Double]?,
+    maxs: [Double]?,
+    channel: Int,
+    transform: (Float) -> Float
+) throws -> [Float] {
+    if let codebook {
+        guard codebook.count >= 256 else {
+            throw SplatPCSOGSZipLoaderError.invalidMetadata
+        }
+        return codebook.map { transform(Float($0)) }
+    }
+    guard let mins,
+          let maxs,
+          mins.count > channel,
+          maxs.count > channel else {
+        throw SplatPCSOGSZipLoaderError.invalidMetadata
+    }
+    return (0 ..< 256).map { index in
+        let t = Double(index) / 255.0
+        let value = Float(mins[channel] + (maxs[channel] - mins[channel]) * t)
+        return transform(value)
+    }
 }
 
 private func entry(named name: String, in entries: [String: Data]) throws -> Data {

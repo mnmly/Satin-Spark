@@ -93,6 +93,14 @@ open class SplatMesh: Mesh {
         }
     }
 
+    public func applyVisibleOrdering(_ visibleOrdering: [UInt32]) {
+        var padded = Array(repeating: UInt32.max, count: packedSplats.numSplats)
+        for (index, splatIndex) in visibleOrdering.prefix(packedSplats.numSplats).enumerated() {
+            padded[index] = splatIndex
+        }
+        applyOrdering(padded)
+    }
+
     open override func setupMaterial() {
         super.setupMaterial()
         bindSplatBuffers()

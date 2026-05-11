@@ -39,11 +39,11 @@ struct SplatReferenceTests {
         let renderSize = SIMD2<Float>(512.0, 512.0)
 
         let expectedRadii: [(Float, Float)] = [
-            (55.502224, 26.320381),
-            (47.159126, 31.295895),
-            (40.446587, 32.600067),
-            (51.139397, 25.028118),
-            (53.82101, 53.82101),
+            (38.57848, 18.294767),
+            (36.30625, 24.093676),
+            (33.762043, 27.21231),
+            (44.117313, 21.591448),
+            (53.821014, 53.821014),
         ]
 
         for index in 0 ..< splats.numSplats {
@@ -57,7 +57,6 @@ struct SplatReferenceTests {
                 projectionMatrix: projectionMatrix,
                 renderSize: renderSize
             ))
-
             expectApproximatelyEqual(projected.radius1, expectedRadii[index].0, tolerance: 0.0005)
             expectApproximatelyEqual(projected.radius2, expectedRadii[index].1, tolerance: 0.0005)
             #expect(projected.viewCenter.z < 0.0)
@@ -302,6 +301,21 @@ struct SplatReferenceTests {
     }
 
     @Test
+    func packedSphericalHarmonicsEvaluateViewDependentRgb() {
+        var harmonics = PackedSphericalHarmonics.storage(numSplats: 1, degree: 3)
+        let encoding = SplatEncoding(sh1Max: 1.0, sh2Max: 1.0, sh3Max: 1.0)
+        harmonics.setSH1([0.2, -0.1, 0.05, 0.08, 0.0, -0.06, -0.12, 0.15, 0.04], at: 0, encoding: encoding)
+        harmonics.setSH2([0.04, -0.05, 0.02, 0.01, 0.03, -0.02, 0.06, -0.01, 0.02, 0.04, -0.03, 0.05, 0.01, -0.04, 0.03], at: 0, encoding: encoding)
+        harmonics.setSH3([0.03, -0.01, 0.02, 0.04, -0.05, 0.01, 0.02, 0.01, -0.02, 0.03, -0.04, 0.05, 0.01, 0.02, -0.03, 0.04, -0.01, 0.02, 0.03, -0.02, 0.01], at: 0, encoding: encoding)
+
+        let front = harmonics.evaluate(at: 0, viewDirection: [0.0, 0.0, 1.0], encoding: encoding)
+        let angled = harmonics.evaluate(at: 0, viewDirection: simd_normalize(SIMD3<Float>(0.4, -0.3, 0.8)), encoding: encoding)
+
+        #expect(simd_length(front) > 0.001)
+        #expect(simd_distance(front, angled) > 0.001)
+    }
+
+    @Test
     func loaderDetectsSparkFileTypes() {
         #expect(SplatLoader.fileType(for: Data("ply\n".utf8)) == .ply)
         #expect(SplatLoader.fileType(for: Data([0x1f, 0x8b, 0x08, 0x00])) == .spz)
@@ -469,6 +483,354 @@ struct SplatReferenceTests {
         let splats = try SplatLoader.parse(gzipFixture, path: "/tmp/fixture.spz")
         #expect(splats.numSplats == 1)
         expectApproximatelyEqual(splats.getSplat(at: 0).center, [1.0, -2.0, 3.0], tolerance: 0.00001)
+    }
+
+    @Test
+    func radLoaderParsesSparkGeneratedInlineRAD() throws {
+        guard let url = Bundle.module.url(
+            forResource: "robot-head-lod",
+            withExtension: "rad",
+            subdirectory: "Fixtures/SparkAssets"
+        ) else { return }
+        let data = try Data(contentsOf: url)
+        let header = try SplatRADLoader.parseHeader(data)
+        let splats = try SplatLoader.parse(data, path: url.path)
+
+        #expect(header.metadata.count == 51_350)
+        #expect(header.metadata.chunks.count == 1)
+        #expect(header.metadata.maxSH == 0)
+        #expect(header.metadata.splatEncoding?.rgbMin == -0.14526367)
+        #expect(header.metadata.splatEncoding?.rgbMax == 1.1894531)
+        #expect(splats.numSplats == 51_350)
+        #expect(splats.sphericalHarmonics.degree == 0)
+
+        let first = splats.getSplat(at: 0)
+        #expect(first.center.x.isFinite)
+        #expect(first.center.y.isFinite)
+        #expect(first.center.z.isFinite)
+        #expect(first.scale.x >= 0.0)
+        #expect(first.scale.y >= 0.0)
+        #expect(first.scale.z >= 0.0)
+        #expect(first.opacity >= 0.0)
+    }
+
+    @Test
+    func radLoaderParsesSparkGeneratedSidecarRAD() throws {
+        guard let url = Bundle.module.url(
+            forResource: "satin-spark-robot-head-lod",
+            withExtension: "rad",
+            subdirectory: "Fixtures/SparkAssets"
+        ) else { return }
+        let header = try SplatRADLoader.loadHeader(url: url)
+        let splats = try SplatLoader.load(url: url)
+
+        #expect(header.metadata.count == 51_350)
+        #expect(header.metadata.chunks.count == 1)
+        #expect(header.metadata.chunks[0].filename == "satin-spark-robot-head-lod-0.radc")
+        #expect(header.metadata.lodTree)
+        #expect(splats.numSplats == 51_350)
+        #expect(splats.splatEncoding.lodOpacity)
+    }
+
+    @Test
+    func radPagedFileLoadsSidecarChunkWithLodChildren() throws {
+        guard let url = Bundle.module.url(
+            forResource: "satin-spark-robot-head-lod",
+            withExtension: "rad",
+            subdirectory: "Fixtures/SparkAssets"
+        ) else { return }
+        let paged = try SplatRADPagedFile(url: url)
+        let page = try paged.loadRootChunk()
+
+        #expect(paged.header.metadata.chunks.count == 1)
+        #expect(page.chunkIndex == 0)
+        #expect(page.base == 0)
+        #expect(page.count == 51_350)
+        #expect(page.splats.numSplats == 51_350)
+        #expect(page.splats.splatEncoding.lodOpacity)
+        #expect(page.childCounts?.count == 51_350)
+        #expect(page.childStarts?.count == 51_350)
+        #expect((page.childCounts ?? []).contains { $0 > 0 })
+    }
+
+    @Test
+    func radPageSelectsLodSubsetFromChildren() throws {
+        guard let url = Bundle.module.url(
+            forResource: "satin-spark-robot-head-lod",
+            withExtension: "rad",
+            subdirectory: "Fixtures/SparkAssets"
+        ) else { return }
+        let page = try SplatRADPagedFile(url: url).loadRootChunk()
+        let modelViewMatrix = translationMatrix([0.0, 0.0, -3.2])
+        let projectionMatrix = perspectiveProjectionMatrix(fovYDegrees: 45.0, aspect: 1.0, near: 0.01, far: 100.0)
+        let selection = page.selectLOD(
+            modelViewMatrix: modelViewMatrix,
+            projectionMatrix: projectionMatrix,
+            renderSize: [512.0, 512.0],
+            splitPixelRadius: 12.0
+        )
+
+        #expect(!selection.isEmpty)
+        #expect(selection.count < page.count)
+        #expect(selection.allSatisfy { Int($0) < page.count })
+    }
+
+    @Test
+    func radPageBuildsParentIndicesForGpuPaging() throws {
+        guard let url = Bundle.module.url(
+            forResource: "satin-spark-robot-head-lod",
+            withExtension: "rad",
+            subdirectory: "Fixtures/SparkAssets"
+        ) else { return }
+        let page = try SplatRADPagedFile(url: url).loadRootChunk()
+        let localChildStarts = try #require(page.localChildStarts())
+        let parents = try #require(page.parentIndices())
+
+        #expect(localChildStarts.count == page.count)
+        #expect(parents.count == page.count)
+        #expect(parents[page.lodRootIndex()] == UInt32.max)
+        #expect(parents.contains { $0 != UInt32.max })
+        #expect((page.childCounts ?? []).enumerated().allSatisfy { index, childCount in
+            guard childCount > 0 else { return true }
+            let start = Int(localChildStarts[index])
+            return start >= 0 && start + Int(childCount) <= page.count
+        })
+    }
+
+    @Test
+    func radPageCacheKeepsMostRecentChunksResident() throws {
+        guard let url = Bundle.module.url(
+            forResource: "satin-spark-robot-head-lod",
+            withExtension: "rad",
+            subdirectory: "Fixtures/SparkAssets"
+        ) else { return }
+        let cache = SplatRADPageCache(pagedFile: try SplatRADPagedFile(url: url), maxPages: 1)
+        let page = try cache.loadChunk(0)
+        let residentPage = cache.pageIfResident(0)
+
+        #expect(page.count == 51_350)
+        #expect(residentPage?.count == page.count)
+        #expect(cache.residentChunkIndices == [0])
+        cache.unloadChunk(0)
+        #expect(cache.residentChunkIndices.isEmpty)
+    }
+
+    @Test
+    func radRemotePagedFileLoadsLocalSidecarChunkAsync() async throws {
+        guard let url = Bundle.module.url(
+            forResource: "satin-spark-robot-head-lod",
+            withExtension: "rad",
+            subdirectory: "Fixtures/SparkAssets"
+        ) else { return }
+        let remote = SplatRADRemotePagedFile(url: url)
+        let header = try await remote.loadHeader()
+        let page = try await remote.loadRootChunk()
+
+        #expect(header.metadata.chunks.count == 1)
+        #expect(page.count == 51_350)
+        #expect(page.childCounts?.count == page.count)
+    }
+
+    @Test
+    func radAsyncPageCachePreparesChunks() async throws {
+        guard let url = Bundle.module.url(
+            forResource: "satin-spark-robot-head-lod",
+            withExtension: "rad",
+            subdirectory: "Fixtures/SparkAssets"
+        ) else { return }
+        let cache = SplatRADAsyncPageCache(
+            pagedFile: SplatRADRemotePagedFile(url: url),
+            maxPages: 1
+        )
+        let pages = try await cache.prepareChunks([0])
+
+        #expect(pages.count == 1)
+        #expect(pages[0].count == 51_350)
+        #expect(await cache.residentChunkIndices == [0])
+    }
+
+    @Test
+    func extSplatsRoundTripSparkEncoding() throws {
+        let splat = ExtSplat(
+            center: [1.25, -2.5, 0.375],
+            scale: [0.04, 0.12, 0.33],
+            rotation: simd_quatf(angle: 0.72, axis: normalize(SIMD3<Float>(0.2, 0.7, 0.4))),
+            opacity: 0.625,
+            color: [0.1, 0.45, 0.9]
+        )
+        let extSplats = ExtSplats(splats: [splat])
+        let decoded = extSplats.getSplat(at: 0)
+
+        #expect(decoded.center == splat.center)
+        #expect(abs(decoded.opacity - splat.opacity) < 0.001)
+        #expect(simd_length(decoded.color - splat.color) < 0.001)
+        #expect(simd_length(decoded.scale - splat.scale) < 0.001)
+        #expect(abs(simd_dot(decoded.rotation.vector, splat.rotation.vector)) > 0.999)
+    }
+
+    @Test
+    func extSplatsConvertToPackedSplatsAndCovariance() throws {
+        let packed = SplatFixtures.deterministicScene()
+        let extSplats = ExtSplats(packedSplats: packed)
+        let repacked = extSplats.toPackedSplats()
+        let covariance = extSplats.getSplat(at: 0).covariance
+
+        #expect(extSplats.numSplats == packed.numSplats)
+        #expect(repacked.numSplats == packed.numSplats)
+        #expect(covariance[0][0] > 0.0)
+        #expect(abs(covariance[0][1] - covariance[1][0]) < 0.00001)
+        #expect(abs(covariance[0][2] - covariance[2][0]) < 0.00001)
+        #expect(abs(covariance[1][2] - covariance[2][1]) < 0.00001)
+    }
+
+    @Test
+    func splatSkinningAppliesDualQuaternionPose() throws {
+        var splat = PackedSplat(center: [1.0, 0.0, 0.0], scale: [0.1, 0.2, 0.3])
+        splat.rotation = simd_quatf(angle: 0.0, axis: [0.0, 0.0, 1.0])
+        let skinning = SplatSkinning(numSplats: 1, numBones: 1)
+        skinning.setSplatBones(0, boneIndices: [0, 0, 0, 0], weights: [1.0, 0.0, 0.0, 0.0])
+        skinning.setRestPose(0, pose: SplatBonePose())
+        skinning.setBonePose(
+            0,
+            pose: SplatBonePose(
+                rotation: simd_quatf(angle: Float.pi * 0.5, axis: [0.0, 0.0, 1.0]),
+                position: [0.0, 2.0, 0.0]
+            )
+        )
+        let transformed = skinning.modify(splat, at: 0)
+        let transformedCollection = skinning.apply(to: PackedSplats(splats: [splat]))
+
+        #expect(simd_length(transformed.center - SIMD3<Float>(0.0, 3.0, 0.0)) < 0.0001)
+        #expect(simd_length(transformedCollection.getSplat(at: 0).center - SIMD3<Float>(0.0, 3.0, 0.0)) < 0.001)
+        #expect(simd_length(transformed.scale - splat.scale) < 0.0001)
+    }
+
+    @Test
+    func splatSkinningRotatesCovariance() throws {
+        let skinning = SplatSkinning(numSplats: 1, numBones: 1)
+        skinning.setSplatBones(0, boneIndices: [0, 0, 0, 0], weights: [1.0, 0.0, 0.0, 0.0])
+        skinning.setBonePose(
+            0,
+            pose: SplatBonePose(rotation: simd_quatf(angle: Float.pi * 0.5, axis: [0.0, 0.0, 1.0]))
+        )
+        let cov = CovarianceSplat(
+            center: [0.0, 0.0, 0.0],
+            covariance: simd_float3x3(
+                SIMD3<Float>(4.0, 0.0, 0.0),
+                SIMD3<Float>(0.0, 1.0, 0.0),
+                SIMD3<Float>(0.0, 0.0, 1.0)
+            ),
+            opacity: 1.0,
+            color: [1.0, 1.0, 1.0]
+        )
+        let transformed = skinning.modify(cov, at: 0)
+
+        #expect(abs(transformed.covariance[0][0] - 1.0) < 0.0001)
+        #expect(abs(transformed.covariance[1][1] - 4.0) < 0.0001)
+    }
+
+    @Test
+    func spzLoaderParsesSparkHostedExample() throws {
+        guard let url = Bundle.module.url(
+            forResource: "robot-head",
+            withExtension: "spz",
+            subdirectory: "Fixtures/SparkAssets"
+        ) else { return }
+        let splats = try SplatLoader.load(url: url)
+
+        #expect(splats.numSplats == 45_401)
+        #expect(splats.sphericalHarmonics.degree == 3)
+
+        let first = splats.getSplat(at: 0)
+        #expect(first.center.x.isFinite)
+        #expect(first.center.y.isFinite)
+        #expect(first.center.z.isFinite)
+        #expect(first.opacity >= 0.0)
+    }
+
+    @Test
+    func sogZipLoaderParsesSparkHostedExample() throws {
+        guard let url = Bundle.module.url(
+            forResource: "sutro",
+            withExtension: "zip",
+            subdirectory: "Fixtures/SparkAssets"
+        ) else { return }
+        let splats = try SplatLoader.load(url: url)
+
+        #expect(splats.numSplats == 1_999_396)
+        #expect(splats.sphericalHarmonics.degree == 3)
+
+        let first = splats.getSplat(at: 0)
+        #expect(first.center.x.isFinite)
+        #expect(first.center.y.isFinite)
+        #expect(first.center.z.isFinite)
+        #expect(first.scale.x >= 0.0)
+        #expect(first.scale.y >= 0.0)
+        #expect(first.scale.z >= 0.0)
+        #expect(first.opacity >= 0.0)
+    }
+
+    @Test
+    func ksplatLoaderParsesGaussianSplats3DExample() throws {
+        guard let url = Bundle.module.url(
+            forResource: "bonsai-trimmed",
+            withExtension: "ksplat",
+            subdirectory: "Fixtures/SparkAssets"
+        ) else { return }
+        let splats = try SplatLoader.load(url: url)
+
+        #expect(splats.numSplats == 175_745)
+
+        let first = splats.getSplat(at: 0)
+        #expect(first.center.x.isFinite)
+        #expect(first.center.y.isFinite)
+        #expect(first.center.z.isFinite)
+        #expect(first.scale.x >= 0.0)
+        #expect(first.scale.y >= 0.0)
+        #expect(first.scale.z >= 0.0)
+        #expect(first.opacity >= 0.0)
+    }
+
+    @Test
+    func rawSplatLoaderParsesAntimatterReadmeExample() throws {
+        guard let url = Bundle.module.url(
+            forResource: "nike-next",
+            withExtension: "splat",
+            subdirectory: "Fixtures/SparkAssets"
+        ) else { return }
+        let splats = try SplatLoader.load(url: url)
+
+        #expect(splats.numSplats == 270_491)
+
+        let first = splats.getSplat(at: 0)
+        #expect(first.center.x.isFinite)
+        #expect(first.center.y.isFinite)
+        #expect(first.center.z.isFinite)
+        #expect(first.scale.x >= 0.0)
+        #expect(first.scale.y >= 0.0)
+        #expect(first.scale.z >= 0.0)
+        #expect(first.opacity >= 0.0)
+    }
+
+    @Test
+    func plyLoaderParsesHostedGaussianSplatExample() throws {
+        guard let url = Bundle.module.url(
+            forResource: "point-cloud",
+            withExtension: "ply",
+            subdirectory: "Fixtures/SparkAssets"
+        ) else { return }
+        let splats = try SplatLoader.load(url: url)
+
+        #expect(splats.numSplats == 143_719)
+
+        let first = splats.getSplat(at: 0)
+        #expect(first.center.x.isFinite)
+        #expect(first.center.y.isFinite)
+        #expect(first.center.z.isFinite)
+        #expect(first.scale.x >= 0.0)
+        #expect(first.scale.y >= 0.0)
+        #expect(first.scale.z >= 0.0)
+        #expect(first.opacity >= 0.0)
     }
 
 }

@@ -98,6 +98,19 @@ SATIN_SPARK_VISUAL_URL="http://127.0.0.1:5179/fixture.html?packed=/fixture-packe
 .build/debug/satin-spark-image-diff /tmp/satin-fixture.png /tmp/spark-fixture.png /tmp/diff.png
 ```
 
+## Preparing Test Fixtures
+
+Real upstream-format fixtures are generated from Spark's hosted example assets:
+
+```bash
+node Scripts/prepare-fixtures.mjs
+```
+
+By default the script expects the Spark repo at
+`/Users/mnmly/Development-local/GitHub/js/spark`; override with `SPARK_REPO`.
+The generated binaries live under `Tests/SatinSparkTests/Fixtures/SparkAssets`
+and are ignored by git.
+
 Acceptance numbers on the deterministic 5-splat fixture (512×512):
 
 | mode | mae | normalizedMAE |

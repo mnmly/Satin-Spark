@@ -52,12 +52,17 @@ shape for this port.
   render, samples the output image at those centers, and verifies visible color
   dominance/energy. It also renders each fixture splat in isolation and samples
   inside/outside the CPU-projected major/minor axes to catch scale or axis
-  projection drift. The combined-scene center color check is intentionally
-  tolerant of overlap between splats.
+  projection drift. The CPU projection oracle now uses the same opacity,
+  pre-blur/blur, focal-adjustment, and radius defaults as `SplatMaterial`, so it
+  catches actual shader drift instead of the older opacity-doubled reference path.
+  The combined-scene center color check is intentionally tolerant of overlap
+  between splats.
 - `SATIN_SPARK_VERIFY_ALPHA_FALLOFF=1` renders a low-opacity isolated splat,
   infers fragment alpha from the blended RGB over the known clear color, and
   checks center/half-radius/three-quarter-radius samples against Spark's simple
-  Gaussian falloff branch.
+  Gaussian falloff branch. The verifier samples the observed clear color from
+  the output image, so it remains valid across sRGB and byte-parity render
+  targets.
 - `satin-spark-demo` hosts `SplatDemoView` in a small SwiftUI app and renders the
   deterministic fixture scene live. `SplatDemoRenderer.resize` forwards the live
   viewport size into `SplatMaterial.renderSize`, matching the offscreen fixture
@@ -70,6 +75,54 @@ shape for this port.
   can sort by camera view Z or radial distance, `SplatMesh.updateOrdering`
   uploads the ordering buffer, and `satin-spark-demo` refreshes radial ordering
   before each draw.
+- `SplatLoader` now routes the static loader formats through the public
+  dispatcher: PLY, Spark `.splat`, SPZ, KSPLAT, PC-SOGS metadata/images,
+  bundled SOG/PC-SOGS zip, and inline RAD files.
+- Packed SH data has a public CPU evaluator matching the shader-side SH1/SH2/SH3
+  basis and quantization. `SplatMesh` already binds SH buffers and sets `shDegree`,
+  so loaded SH data now has both render-time and CPU-test coverage.
+- Real fixture preparation is handled by `node Scripts/prepare-fixtures.mjs`.
+  It downloads Spark's hosted `robot-head.spz` and `sutro.zip` examples,
+  extracts GaussianSplats3D's `bonsai_trimmed.ksplat` from the original demo
+  data bundle, downloads a raw `.splat` example cited by the original
+  `antimatter15/splat` README, downloads a hosted Gaussian splat PLY example,
+  and derives inline/sidecar RAD fixtures with Spark's Rust `build-lod`. The
+  generated binaries are ignored by git.
+- Bundled SOG/PC-SOGS zip decoding now accepts Spark's current no-version SOG
+  metadata shape in addition to the older version-2/codebook shape.
+- Inline RAD decoding covers Spark's chunk property model for packed/static
+  rendering: center, alpha, RGB, scales, orientation, and direct SH1/SH2/SH3
+  properties, including the common scalar encodings and zlib/gzip-compressed
+  property payloads. This is covered by a real fixture generated from Spark's
+  hosted `robot-head.spz` example with Spark's Rust `build-lod` tool.
+- Static RAD sidecar loading is in place for `.rad` headers with `.radc`
+  filenames when loading from a file URL; the test fixture uses Spark's
+  `--rad-chunked` output.
+- RAD paging has a first local-file implementation: `SplatRADPagedFile` loads the
+  header separately, `loadChunk`/`loadRootChunk` decode individual inline or
+  sidecar chunks, and `SplatRADPage` preserves `child_count`/`child_start`. The
+  page can do CPU LOD selection via `selectLOD(...)`, and `SplatMesh` can render
+  that selected subset with `applyVisibleOrdering(...)`.
+- GPU RAD page selection is in place for loaded pages: `SplatRADGPUPager` builds
+  child-start/parent traversal buffers and encodes LOD selection into a mesh
+  ordering buffer. `SplatGPUSorter.encodeExistingOrdering(...)` can then sort the
+  selected subset on GPU before drawing.
+- RAD page scheduling now has a local LRU cache (`SplatRADPageCache`) that keeps
+  a bounded resident set of decoded chunks and can prepare chunk priorities for
+  larger sidecar/inline RAD files.
+- Remote/async RAD paging is represented by `SplatRADRemotePagedFile` and
+  `SplatRADAsyncPageCache`. HTTP URLs use range requests for inline RAD chunks
+  and sidecar URL resolution for `.radc`; file URLs use the same async API for
+  tests and local apps.
+- Spark's extended splat 8-word encoding is represented by `ExtSplats`:
+  full-float centers, half-float opacity/RGB/log-scale, and octahedral 10/10/12
+  quaternion packing. Ext splats can round-trip to packed splats and expose a
+  covariance matrix helper for covariance-splat paths.
+- Native ext-splat rendering is available through `ExtSplatMesh`,
+  `ExtSplatMaterial`, and `Pipelines/ExtSplat/Shaders.metal`.
+- `SplatSkinning` ports Spark's dual-quaternion skinning math for packed,
+  ext, and covariance splats. It can transform individual splats or produce
+  skinned `PackedSplats`/`ExtSplats` collections.
 
 ## Spark Module Map
 
@@ -79,6 +132,9 @@ shape for this port.
 | `PackedSplats.ts` | `PackedSplats.swift` |
 | `SplatGeometry.ts` | `SplatGeometry.swift` |
 | `SplatMesh.ts` | `SplatMesh.swift` |
+| `ExtSplats.ts` | `ExtSplats.swift` |
+| `SplatPager.ts` | `SplatRADPageCache.swift`, `SplatRADRemotePagedFile.swift`, `SplatRADGPUPager.swift` |
+| `SplatSkinning.ts` | `SplatSkinning.swift` |
 | `shaders/splatDefines.glsl` | `Pipelines/Splat/Shaders.metal` helpers |
 | `shaders/splatVertex.glsl` | `splatVertex` |
 | `shaders/splatFragment.glsl` | `splatFragment` |
@@ -154,6 +210,9 @@ pairs:
   emits `key = view.z` (viewZ metric) or `-|view|²` (radial). Padding entries
   receive `+infinity` keys and `0xffffffff` indices, so they sort to the tail
   and the vertex shader culls them by index.
+- `splatSortComputeKeysFromOrdering` performs the same keying pass from an
+  existing ordering buffer, which keeps RAD GPU LOD selection and sorting on the
+  command buffer without CPU readback.
 - `splatSortBitonicStep` runs `O(log² N)` compare-and-swap passes. Scratch keys
   + indices buffers are `.storageModePrivate` and reused across calls.
 - The sorted index array is blit-copied into the existing `orderingBuffer`
@@ -176,9 +235,11 @@ splats sort in different orders due to fp ordering of compares — both correct)
 
 ## Next Steps
 
-1. Port `SplatLoader` format-by-format, beginning with `.splat`.
-2. Once loaders are in place, add extended splats, SH data, LOD, paging, and
-   edit/skinning features.
+1. Port SDF edit execution if the Satin integration needs interactive Spark edit
+   workflows.
+2. Optionally move `SplatSkinning` from CPU-produced skinned collections into a
+   live GPU material path if animated skeletons need per-frame deformation
+   without rebuilding splat buffers.
 
 Parity is now measured against `biker.ply` rather than the earlier banana
 fixture. The CPU sort is retained only as a test oracle and `SATIN_SPARK_SORT=cpu`
@@ -190,5 +251,6 @@ that path since it does not run at runtime.
 - Dyno shader graph.
 - WebXR/control helpers (not planned).
 - Portal rendering.
-- SOG/SPZ/KSPLAT support until the base loader shape is established.
-- GPU LOD traversal and paging until sorted packed rendering is stable.
+- SDF edit shader execution.
+- Live GPU skinning in the render material; CPU skinning and covariance rotation
+  are implemented.

@@ -53,6 +53,10 @@ public final class SplatMaterial: SourceMaterial {
         didSet { set("shDegree", shDegree) }
     }
 
+    public var lodOpacity: Bool = false {
+        didSet { set("lodOpacity", lodOpacity ? UInt32(1) : UInt32(0)) }
+    }
+
     /// When true, render in byte-parity mode with three.js Spark's WebGL fixture:
     /// - skip the `rgba.a *= 2.0` opacity doubling in vertex
     /// - skip the `srgbToLinear` decode in fragment
@@ -135,6 +139,7 @@ public final class SplatMaterial: SourceMaterial {
         set("numSplats", numSplats)
         set("debugMode", debugMode)
         set("shDegree", shDegree)
+        set("lodOpacity", lodOpacity ? UInt32(1) : UInt32(0))
         set("legacySparkBlending", legacySparkBlending ? UInt32(1) : UInt32(0))
         updateEncodingUniform()
     }
@@ -150,6 +155,7 @@ public final class SplatMaterial: SourceMaterial {
             )
         )
         set("shMax", SIMD3<Float>(splatEncoding.sh1Max, splatEncoding.sh2Max, splatEncoding.sh3Max))
+        lodOpacity = splatEncoding.lodOpacity
     }
 
     private func updateExplicitBufferBindings() {
