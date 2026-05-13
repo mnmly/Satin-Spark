@@ -121,6 +121,20 @@ open class SplatMesh: Mesh {
         bindSplatBuffers()
     }
 
+    /// Track the active encoder viewport so `SplatMaterial.renderSize` always
+    /// matches the per-draw target. Without this, a single live `renderSize`
+    /// would leak across viewports (e.g. each eye of a side-by-side stereo
+    /// render), collapsing splats into a sliver at one edge of each eye.
+    open override func update(renderContext: Context, camera: Camera, viewport: simd_float4, index: Int) {
+        if let material = material as? SplatMaterial {
+            let size = SIMD2<Float>(viewport.z, viewport.w)
+            if size.x > 0, size.y > 0, material.renderSize != size {
+                material.renderSize = size
+            }
+        }
+        super.update(renderContext: renderContext, camera: camera, viewport: viewport, index: index)
+    }
+
     private func bindSplatBuffers() {
         guard let material = material as? SplatMaterial else { return }
         material.setPackedBuffer(packedBuffer)
