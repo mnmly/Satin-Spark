@@ -51,19 +51,34 @@ open class SplatMesh: Mesh {
     }
 
     public func rebuildBuffers() {
-        packedBuffer = packedSplats.makeBuffer(device: context.device)
+        SplatPerfLog.log("mesh: rebuildBuffers numSplats=\(packedSplats.numSplats)")
+        SplatPerfLog.measure("mesh: packedBuffer") {
+            packedBuffer = packedSplats.makeBuffer(device: context.device)
+        }
         if emptySHBuffer == nil {
             let empty = [UInt32](repeating: 0, count: 4)
             emptySHBuffer = empty.withUnsafeBytes { bytes in
                 context.device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: .storageModeShared)
             }
         }
-        sh1Buffer = packedSplats.makeSH1Buffer(device: context.device)
-        sh2Buffer = packedSplats.makeSH2Buffer(device: context.device)
-        sh3Buffer = packedSplats.makeSH3Buffer(device: context.device)
-        ordering = (0 ..< packedSplats.numSplats).map(UInt32.init)
-        orderingBuffer = packedSplats.makeOrderingBuffer(device: context.device, ordering: ordering)
-        bindSplatBuffers()
+        SplatPerfLog.measure("mesh: sh1Buffer") {
+            sh1Buffer = packedSplats.makeSH1Buffer(device: context.device)
+        }
+        SplatPerfLog.measure("mesh: sh2Buffer") {
+            sh2Buffer = packedSplats.makeSH2Buffer(device: context.device)
+        }
+        SplatPerfLog.measure("mesh: sh3Buffer") {
+            sh3Buffer = packedSplats.makeSH3Buffer(device: context.device)
+        }
+        SplatPerfLog.measure("mesh: identity ordering build") {
+            ordering = (0 ..< packedSplats.numSplats).map(UInt32.init)
+        }
+        SplatPerfLog.measure("mesh: orderingBuffer") {
+            orderingBuffer = packedSplats.makeOrderingBuffer(device: context.device, ordering: ordering)
+        }
+        SplatPerfLog.measure("mesh: bindSplatBuffers") {
+            bindSplatBuffers()
+        }
     }
 
     public func updateOrdering(modelViewMatrix: simd_float4x4, metric: SplatSortMetric = .radial) {

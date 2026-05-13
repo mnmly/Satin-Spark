@@ -13,19 +13,31 @@ public enum SplatSortMetric: Sendable, Equatable {
     case radial
 }
 
+public struct PackedSplatBounds: Sendable, Equatable {
+    public var min: SIMD3<Float>
+    public var max: SIMD3<Float>
+
+    public init(min: SIMD3<Float>, max: SIMD3<Float>) {
+        self.min = min
+        self.max = max
+    }
+}
+
 public final class PackedSplats: @unchecked Sendable {
     public private(set) var maxSplats: Int
     public private(set) var numSplats: Int
     public private(set) var packedArray: [UInt32]
     public var sphericalHarmonics: PackedSphericalHarmonics
     public var splatEncoding: SplatEncoding
+    public var precomputedBounds: PackedSplatBounds?
 
     public init(
         packedArray: [UInt32] = [],
         numSplats: Int? = nil,
         maxSplats: Int? = nil,
         sphericalHarmonics: PackedSphericalHarmonics = PackedSphericalHarmonics(),
-        splatEncoding: SplatEncoding = SplatEncoding()
+        splatEncoding: SplatEncoding = SplatEncoding(),
+        precomputedBounds: PackedSplatBounds? = nil
     ) {
         precondition(packedArray.count.isMultiple(of: 4), "Packed splat arrays must contain 4 UInt32 words per splat")
         self.packedArray = packedArray
@@ -33,6 +45,7 @@ public final class PackedSplats: @unchecked Sendable {
         self.maxSplats = max(maxSplats ?? packedArray.count / 4, self.numSplats)
         self.sphericalHarmonics = sphericalHarmonics
         self.splatEncoding = splatEncoding
+        self.precomputedBounds = precomputedBounds
 
         let requiredWords = self.maxSplats * 4
         if self.packedArray.count < requiredWords {

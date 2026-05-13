@@ -25,18 +25,30 @@ public final class SplatGPUSorter {
     private var paddedCapacity: Int = 0
 
     public init(device: MTLDevice) throws {
+        SplatPerfLog.log("sorter: init begin")
         self.device = device
         let url = Bundle.module.url(forResource: "Shaders", withExtension: "metal", subdirectory: "Pipelines/SplatSort")!
-        let source = try String(contentsOf: url, encoding: .utf8)
-        let library = try device.makeLibrary(source: source, options: nil)
+        let source = try SplatPerfLog.measure("sorter: load shader source") {
+            try String(contentsOf: url, encoding: .utf8)
+        }
+        let library = try SplatPerfLog.measure("sorter: makeLibrary (compile metal)") {
+            try device.makeLibrary(source: source, options: nil)
+        }
         guard let computeKeysFn = library.makeFunction(name: "splatSortComputeKeys"),
               let computeKeysFromOrderingFn = library.makeFunction(name: "splatSortComputeKeysFromOrdering"),
               let bitonicStepFn = library.makeFunction(name: "splatSortBitonicStep") else {
             throw NSError(domain: "SplatGPUSorter", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to find sort kernels"])
         }
-        self.computeKeys = try device.makeComputePipelineState(function: computeKeysFn)
-        self.computeKeysFromOrdering = try device.makeComputePipelineState(function: computeKeysFromOrderingFn)
-        self.bitonicStep = try device.makeComputePipelineState(function: bitonicStepFn)
+        self.computeKeys = try SplatPerfLog.measure("sorter: pipeline computeKeys") {
+            try device.makeComputePipelineState(function: computeKeysFn)
+        }
+        self.computeKeysFromOrdering = try SplatPerfLog.measure("sorter: pipeline computeKeysFromOrdering") {
+            try device.makeComputePipelineState(function: computeKeysFromOrderingFn)
+        }
+        self.bitonicStep = try SplatPerfLog.measure("sorter: pipeline bitonicStep") {
+            try device.makeComputePipelineState(function: bitonicStepFn)
+        }
+        SplatPerfLog.log("sorter: init done")
     }
 
     /// Encode the sort onto `commandBuffer`. After the buffer commits, `orderingBuffer`

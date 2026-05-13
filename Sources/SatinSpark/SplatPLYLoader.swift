@@ -43,14 +43,22 @@ public enum SplatPLYLoader {
             guard let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress else {
                 throw SplatPLYLoaderError.invalidHeader
             }
-            let header = try parseHeader(base: base, count: rawBuffer.count)
+            let header = try SplatPerfLog.measure("ply: header") {
+                try parseHeader(base: base, count: rawBuffer.count)
+            }
+            SplatPerfLog.log("ply: vertices=\(header.vertexCount) format=\(header.format) properties=\(header.vertexProperties.count)")
             let layout = try VertexLayout(properties: header.vertexProperties)
+            SplatPerfLog.log("ply: shDegree=\(layout.shDegree) stride=\(layout.stride) activeFields=\(layout.activeFields.count)")
 
             switch header.format {
             case .ascii:
-                return try parseASCIIVertices(base: base, count: rawBuffer.count, header: header, layout: layout)
+                return try SplatPerfLog.measure("ply: body ascii") {
+                    try parseASCIIVertices(base: base, count: rawBuffer.count, header: header, layout: layout)
+                }
             case .binaryLittleEndian:
-                return try parseBinaryLittleEndianVertices(base: base, count: rawBuffer.count, header: header, layout: layout)
+                return try SplatPerfLog.measure("ply: body binary") {
+                    try parseBinaryLittleEndianVertices(base: base, count: rawBuffer.count, header: header, layout: layout)
+                }
             }
         }
     }
@@ -334,6 +342,19 @@ private func parseHeader(base: UnsafePointer<UInt8>, count: Int) throws -> PLYHe
     throw SplatPLYLoaderError.invalidHeader
 }
 
+private struct ParseScratch {
+    var values = VertexValues()
+    var sh1: [Float]
+    var sh2: [Float]
+    var sh3: [Float]
+
+    init(shDegree: Int) {
+        sh1 = shDegree >= 1 ? Array(repeating: 0.0, count: 9) : []
+        sh2 = shDegree >= 2 ? Array(repeating: 0.0, count: 15) : []
+        sh3 = shDegree >= 3 ? Array(repeating: 0.0, count: 21) : []
+    }
+}
+
 private func parseBinaryLittleEndianVertices(
     base: UnsafePointer<UInt8>,
     count: Int,
@@ -347,14 +368,25 @@ private func parseBinaryLittleEndianVertices(
 
     var packedArray = Array(repeating: UInt32(0), count: header.vertexCount * 4)
     var sphericalHarmonics = makeSphericalHarmonicsStorage(numSplats: header.vertexCount, degree: layout.shDegree)
+    var scratch = ParseScratch(shDegree: layout.shDegree)
+    var minBounds = SIMD3<Float>(repeating: Float.greatestFiniteMagnitude)
+    var maxBounds = SIMD3<Float>(repeating: -Float.greatestFiniteMagnitude)
+
     for index in 0 ..< header.vertexCount {
         let vertexBase = base + header.bodyOffset + index * layout.stride
-        let values = readBinaryVertex(base: vertexBase, layout: layout)
-        writePackedSplat(values, layout: layout, into: &packedArray, at: index)
-        writeSphericalHarmonics(values, layout: layout, into: &sphericalHarmonics, at: index)
+        readBinaryVertex(base: vertexBase, layout: layout, into: &scratch.values)
+        writePackedSplat(scratch.values, layout: layout, into: &packedArray, at: index)
+        writeSphericalHarmonics(scratch.values, layout: layout, into: &sphericalHarmonics, scratch: &scratch, at: index)
+        accumulateBounds(scratch.values, layout: layout, min: &minBounds, max: &maxBounds)
     }
 
-    return PackedSplats(packedArray: packedArray, numSplats: header.vertexCount, sphericalHarmonics: sphericalHarmonics)
+    let bounds = header.vertexCount > 0 ? PackedSplatBounds(min: minBounds, max: maxBounds) : nil
+    return PackedSplats(
+        packedArray: packedArray,
+        numSplats: header.vertexCount,
+        sphericalHarmonics: sphericalHarmonics,
+        precomputedBounds: bounds
+    )
 }
 
 private func parseASCIIVertices(
@@ -366,6 +398,9 @@ private func parseASCIIVertices(
     var cursor = header.bodyOffset
     var packedArray = Array(repeating: UInt32(0), count: header.vertexCount * 4)
     var sphericalHarmonics = makeSphericalHarmonicsStorage(numSplats: header.vertexCount, degree: layout.shDegree)
+    var scratch = ParseScratch(shDegree: layout.shDegree)
+    var minBounds = SIMD3<Float>(repeating: Float.greatestFiniteMagnitude)
+    var maxBounds = SIMD3<Float>(repeating: -Float.greatestFiniteMagnitude)
 
     for index in 0 ..< header.vertexCount {
         while cursor < count, (base[cursor] == 0x0a || base[cursor] == 0x0d) {
@@ -390,28 +425,53 @@ private func parseASCIIVertices(
             throw SplatPLYLoaderError.truncatedBody
         }
 
-        var values = VertexValues()
         for (fieldIndex, field) in layout.fields.enumerated() {
             guard field.semantic != .ignored else { continue }
             guard let value = Float(columns[fieldIndex]) else {
                 throw SplatPLYLoaderError.invalidASCIIValue(line: index + 1, property: field.name)
             }
-            assign(value, semantic: field.semantic, to: &values)
+            assign(value, semantic: field.semantic, to: &scratch.values)
         }
-        writePackedSplat(values, layout: layout, into: &packedArray, at: index)
-        writeSphericalHarmonics(values, layout: layout, into: &sphericalHarmonics, at: index)
+        writePackedSplat(scratch.values, layout: layout, into: &packedArray, at: index)
+        writeSphericalHarmonics(scratch.values, layout: layout, into: &sphericalHarmonics, scratch: &scratch, at: index)
+        accumulateBounds(scratch.values, layout: layout, min: &minBounds, max: &maxBounds)
     }
 
-    return PackedSplats(packedArray: packedArray, numSplats: header.vertexCount, sphericalHarmonics: sphericalHarmonics)
+    let bounds = header.vertexCount > 0 ? PackedSplatBounds(min: minBounds, max: maxBounds) : nil
+    return PackedSplats(
+        packedArray: packedArray,
+        numSplats: header.vertexCount,
+        sphericalHarmonics: sphericalHarmonics,
+        precomputedBounds: bounds
+    )
 }
 
-private func readBinaryVertex(base: UnsafePointer<UInt8>, layout: VertexLayout) -> VertexValues {
-    var values = VertexValues()
+private func readBinaryVertex(base: UnsafePointer<UInt8>, layout: VertexLayout, into values: inout VertexValues) {
     for field in layout.activeFields {
         let value = readScalar(type: field.type, base: base + field.offset)
         assign(value, semantic: field.semantic, to: &values)
     }
-    return values
+}
+
+@inline(__always)
+private func accumulateBounds(
+    _ values: VertexValues,
+    layout: VertexLayout,
+    min minBounds: inout SIMD3<Float>,
+    max maxBounds: inout SIMD3<Float>
+) {
+    let sx = decodedScale(logScale: values.scale0, directScale: values.scaleX)
+    let sy = decodedScale(logScale: values.scale1, directScale: values.scaleY)
+    let sz = decodedScale(logScale: values.scale2, directScale: values.scaleZ)
+    let radius = max(sx, max(sy, sz))
+    let center = SIMD3<Float>(
+        finiteOrZero(values.x),
+        finiteOrZero(values.y),
+        finiteOrZero(values.z)
+    )
+    let r = SIMD3<Float>(repeating: radius)
+    minBounds = simd_min(minBounds, center - r)
+    maxBounds = simd_max(maxBounds, center + r)
 }
 
 private func writePackedSplat(_ values: VertexValues, layout: VertexLayout, into packedArray: inout [UInt32], at index: Int) {
@@ -451,26 +511,33 @@ private func writeSphericalHarmonics(
     _ values: VertexValues,
     layout: VertexLayout,
     into sphericalHarmonics: inout PackedSphericalHarmonics,
+    scratch: inout ParseScratch,
     at index: Int
 ) {
     guard layout.shDegree > 0 else { return }
     let shRestCount = layout.shRestCount
     if sphericalHarmonics.sh1 != nil {
-        let coefficients = shCoefficients(values.fRest, start: 0, count: 3, shRestCount: shRestCount)
-        sphericalHarmonics.setSH1(coefficients, at: index, encoding: defaultEncoding)
+        fillSHCoefficients(values.fRest, start: 0, count: 3, shRestCount: shRestCount, into: &scratch.sh1)
+        sphericalHarmonics.setSH1(scratch.sh1, at: index, encoding: defaultEncoding)
     }
     if sphericalHarmonics.sh2 != nil {
-        let coefficients = shCoefficients(values.fRest, start: 3, count: 5, shRestCount: shRestCount)
-        sphericalHarmonics.setSH2(coefficients, at: index, encoding: defaultEncoding)
+        fillSHCoefficients(values.fRest, start: 3, count: 5, shRestCount: shRestCount, into: &scratch.sh2)
+        sphericalHarmonics.setSH2(scratch.sh2, at: index, encoding: defaultEncoding)
     }
     if sphericalHarmonics.sh3 != nil {
-        let coefficients = shCoefficients(values.fRest, start: 8, count: 7, shRestCount: shRestCount)
-        sphericalHarmonics.setSH3(coefficients, at: index, encoding: defaultEncoding)
+        fillSHCoefficients(values.fRest, start: 8, count: 7, shRestCount: shRestCount, into: &scratch.sh3)
+        sphericalHarmonics.setSH3(scratch.sh3, at: index, encoding: defaultEncoding)
     }
 }
 
-private func shCoefficients(_ fRest: [Float], start: Int, count: Int, shRestCount: Int) -> [Float] {
-    var coefficients = Array(repeating: Float(0.0), count: count * 3)
+@inline(__always)
+private func fillSHCoefficients(
+    _ fRest: [Float],
+    start: Int,
+    count: Int,
+    shRestCount: Int,
+    into coefficients: inout [Float]
+) {
     let stride = shRestCount / 3
     for k in 0 ..< count {
         for d in 0 ..< 3 {
@@ -478,7 +545,6 @@ private func shCoefficients(_ fRest: [Float], start: Int, count: Int, shRestCoun
             coefficients[k * 3 + d] = source < fRest.count ? fRest[source] : 0.0
         }
     }
-    return coefficients
 }
 
 private func decodedScale(logScale: Float?, directScale: Float?) -> Float {

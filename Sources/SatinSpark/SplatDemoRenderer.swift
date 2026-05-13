@@ -22,12 +22,17 @@ open class SplatDemoRenderer: MetalViewRenderer, @unchecked Sendable {
     public var sortCoorient: Float = 0.999
 
     private lazy var gpuSorter: SplatGPUSorter? = {
-        try? SplatGPUSorter(device: defaultContext.device)
+        SplatPerfLog.log("renderer: lazy gpuSorter creation (first draw)")
+        return try? SplatPerfLog.measure("renderer: SplatGPUSorter total init") {
+            try SplatGPUSorter(device: defaultContext.device)
+        }
     }()
 
     private var lastSortPosition: SIMD3<Float>?
     private var lastSortDirection: SIMD3<Float>?
     private var needsOrderingUpdate = true
+    private var didLogFirstDraw = false
+    private var didLogFirstSort = false
 
     open override func setup() {
         renderer.setClearColor([0.03, 0.035, 0.045, 1.0])
@@ -46,21 +51,39 @@ open class SplatDemoRenderer: MetalViewRenderer, @unchecked Sendable {
     }
 
     public func replacePackedSplats(_ packedSplats: PackedSplats) {
-        splatMesh.replacePackedSplats(packedSplats)
+        SplatPerfLog.log("renderer: replacePackedSplats numSplats=\(packedSplats.numSplats) bounds=\(packedSplats.precomputedBounds != nil ? "precomputed" : "missing")")
+        SplatPerfLog.measure("renderer: splatMesh.replacePackedSplats") {
+            splatMesh.replacePackedSplats(packedSplats)
+        }
         needsOrderingUpdate = true
-        frameCamera(to: packedSplats)
+        SplatPerfLog.measure("renderer: frameCamera") {
+            frameCamera(to: packedSplats)
+        }
     }
 
     open override func draw(renderPassDescriptor: MTLRenderPassDescriptor, commandBuffer: MTLCommandBuffer) {
+        let isFirstDraw = !didLogFirstDraw
+        if isFirstDraw {
+            SplatPerfLog.log("renderer: first draw begin (numSplats=\(splatMesh.packedSplats.numSplats))")
+            didLogFirstDraw = true
+        }
         if let sorter = gpuSorter {
             updateOrderingIfNeeded(sorter: sorter, commandBuffer: commandBuffer)
         }
-        renderer.draw(
-            renderPassDescriptor: renderPassDescriptor,
-            commandBuffer: commandBuffer,
-            scene: scene,
-            camera: camera
-        )
+        if isFirstDraw, SplatPerfLog.enabled {
+            commandBuffer.addCompletedHandler { buffer in
+                let gpuMillis = (buffer.gpuEndTime - buffer.gpuStartTime) * 1000.0
+                SplatPerfLog.log(String(format: "renderer: first draw GPU time: %.2fms", gpuMillis))
+            }
+        }
+        SplatPerfLog.measure("renderer: draw encode\(isFirstDraw ? " (first)" : "")") {
+            renderer.draw(
+                renderPassDescriptor: renderPassDescriptor,
+                commandBuffer: commandBuffer,
+                scene: scene,
+                camera: camera
+            )
+        }
     }
 
     private func updateOrderingIfNeeded(sorter: SplatGPUSorter, commandBuffer: MTLCommandBuffer) {
@@ -73,14 +96,18 @@ open class SplatDemoRenderer: MetalViewRenderer, @unchecked Sendable {
         guard let packedBuffer = splatMesh.packedBuffer,
               let orderingBuffer = splatMesh.orderingBuffer else { return }
 
-        sorter.encode(
-            commandBuffer: commandBuffer,
-            packedBuffer: packedBuffer,
-            orderingBuffer: orderingBuffer,
-            numSplats: splatMesh.packedSplats.numSplats,
-            modelViewMatrix: camera.viewMatrix * splatMesh.worldMatrix,
-            metric: sortMetric
-        )
+        let isFirstSort = !didLogFirstSort
+        if isFirstSort { didLogFirstSort = true }
+        SplatPerfLog.measure("renderer: sorter.encode\(isFirstSort ? " (first)" : "")") {
+            sorter.encode(
+                commandBuffer: commandBuffer,
+                packedBuffer: packedBuffer,
+                orderingBuffer: orderingBuffer,
+                numSplats: splatMesh.packedSplats.numSplats,
+                modelViewMatrix: camera.viewMatrix * splatMesh.worldMatrix,
+                metric: sortMetric
+            )
+        }
 
         lastSortPosition = position
         lastSortDirection = direction
@@ -113,12 +140,21 @@ open class SplatDemoRenderer: MetalViewRenderer, @unchecked Sendable {
     private func frameCamera(to packedSplats: PackedSplats) {
         guard packedSplats.numSplats > 0 else { return }
 
-        var minBounds = SIMD3<Float>(repeating: Float.greatestFiniteMagnitude)
-        var maxBounds = SIMD3<Float>(repeating: -Float.greatestFiniteMagnitude)
-        packedSplats.forEachSplat { _, splat in
-            let radius = max(splat.scale.x, max(splat.scale.y, splat.scale.z))
-            minBounds = simd_min(minBounds, splat.center - SIMD3<Float>(repeating: radius))
-            maxBounds = simd_max(maxBounds, splat.center + SIMD3<Float>(repeating: radius))
+        let minBounds: SIMD3<Float>
+        let maxBounds: SIMD3<Float>
+        if let bounds = packedSplats.precomputedBounds {
+            minBounds = bounds.min
+            maxBounds = bounds.max
+        } else {
+            var lo = SIMD3<Float>(repeating: Float.greatestFiniteMagnitude)
+            var hi = SIMD3<Float>(repeating: -Float.greatestFiniteMagnitude)
+            packedSplats.forEachSplat { _, splat in
+                let radius = max(splat.scale.x, max(splat.scale.y, splat.scale.z))
+                lo = simd_min(lo, splat.center - SIMD3<Float>(repeating: radius))
+                hi = simd_max(hi, splat.center + SIMD3<Float>(repeating: radius))
+            }
+            minBounds = lo
+            maxBounds = hi
         }
 
         let center = (minBounds + maxBounds) * 0.5

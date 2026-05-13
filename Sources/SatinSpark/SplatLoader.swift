@@ -16,7 +16,11 @@ public enum SplatLoaderError: LocalizedError {
 
 public enum SplatLoader {
     public static func load(url: URL, fileType: SplatFileType? = nil) throws -> PackedSplats {
-        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        SplatPerfLog.log("load: begin url=\(url.lastPathComponent)")
+        let data = try SplatPerfLog.measure("load: read+map") {
+            try Data(contentsOf: url, options: [.mappedIfSafe])
+        }
+        SplatPerfLog.log("load: data bytes=\(data.count)")
         if (fileType ?? Self.fileType(for: data, path: url.path)) == .rad {
             return try SplatRADLoader.load(url: url)
         }
@@ -32,9 +36,12 @@ public enum SplatLoader {
             throw SplatLoaderError.unknownFileType
         }
 
+        SplatPerfLog.log("parse: dispatching fileType=\(fileType.rawValue)")
         switch fileType {
         case .ply:
-            return try SplatPLYLoader.parse(data)
+            return try SplatPerfLog.measure("parse: ply total") {
+                try SplatPLYLoader.parse(data)
+            }
         case .splat:
             return try SplatRawSplatLoader.parse(data)
         case .spz:
