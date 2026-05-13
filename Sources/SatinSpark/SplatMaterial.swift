@@ -2,7 +2,7 @@ import Metal
 import Satin
 import simd
 
-public final class SplatMaterial: SourceMaterial {
+open class SplatMaterial: SourceMaterial {
     public override var lightingModel: LightingModel { .unlit }
 
     public var maxStdDev: Float = sqrt(8.0) {
