@@ -5,3 +5,4 @@ DerivedData/
 .DS_Store
 Tests/SatinSparkTests/Fixtures/SparkAssets/*
 !Tests/SatinSparkTests/Fixtures/SparkAssets/README.md
+.vscode
